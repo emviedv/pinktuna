@@ -287,6 +287,9 @@ export async function applyLayoutSpec(
     applyAnchorPoints(variant, specMap);
     applyZIndexOrdering(variant, specMap);
 
+    // Preserve aspect ratios for all images and vectors (auto-applied, not spec-dependent)
+    preserveImageVectorAspectRatios(variant, originalPositions);
+
     // FINAL DIMENSION ENFORCEMENT - ensure frame is exactly TikTok size
     // Auto-layout and other transforms can sometimes change frame dimensions
     if (variant.width !== TIKTOK_WIDTH || variant.height !== TIKTOK_HEIGHT) {
@@ -1779,6 +1782,105 @@ function applyAspectLockedScaling(
   }
 
   console.log("[applyAspectLockedScaling] Complete. Processed", scaleCount, "nodes with aspect-locked scaling");
+}
+
+/**
+ * Preserve aspect ratios for all images and vectors in the tree.
+ * This ensures visual assets don't get distorted during transformation.
+ *
+ * Applies to node types: RECTANGLE (with image fill), ELLIPSE, POLYGON, STAR, VECTOR, LINE
+ *
+ * @param frame - The TikTok variant frame to process
+ * @param originalPositions - Original dimensions before transformation
+ */
+function preserveImageVectorAspectRatios(
+  frame: FrameNode,
+  originalPositions: Map<string, OriginalPosition>
+): void {
+  console.log("[preserveAspectRatios] Starting aspect ratio preservation for images/vectors...");
+
+  // Node types that should always preserve aspect ratio
+  const ASPECT_LOCKED_TYPES = new Set([
+    "ELLIPSE",
+    "POLYGON",
+    "STAR",
+    "VECTOR",
+    "LINE",
+  ]);
+
+  let preservedCount = 0;
+
+  function walkAndPreserve(node: SceneNode): void {
+    // Skip nodes inside component instances - they're frozen
+    if (isInsideComponentInstance(node)) {
+      return;
+    }
+
+    const originalPos = originalPositions.get(node.id);
+
+    // Check if this node should have aspect ratio preserved
+    let shouldPreserve = false;
+    let reason = "";
+
+    // Check by node type
+    if (ASPECT_LOCKED_TYPES.has(node.type)) {
+      shouldPreserve = true;
+      reason = `type is ${node.type}`;
+    }
+
+    // Check for rectangles/frames with image fills
+    if (node.type === "RECTANGLE" || node.type === "FRAME") {
+      const fillableNode = node as RectangleNode | FrameNode;
+      if (Array.isArray(fillableNode.fills)) {
+        const hasImageFill = fillableNode.fills.some(
+          (fill) => fill.type === "IMAGE" && fill.visible !== false
+        );
+        if (hasImageFill) {
+          shouldPreserve = true;
+          reason = "has image fill";
+        }
+      }
+    }
+
+    // Apply aspect ratio preservation if needed
+    if (shouldPreserve && originalPos && "resize" in node) {
+      const originalAspectRatio = originalPos.width / originalPos.height;
+      const currentAspectRatio = node.width / node.height;
+
+      // Check if aspect ratio changed (with small tolerance for floating point)
+      const aspectRatioChanged = Math.abs(originalAspectRatio - currentAspectRatio) > 0.01;
+
+      if (aspectRatioChanged) {
+        console.log(`[preserveAspectRatios] Fixing ${node.name} (${reason})`);
+        console.log(`  Original: ${originalPos.width.toFixed(1)}x${originalPos.height.toFixed(1)} (ratio: ${originalAspectRatio.toFixed(3)})`);
+        console.log(`  Current:  ${node.width.toFixed(1)}x${node.height.toFixed(1)} (ratio: ${currentAspectRatio.toFixed(3)})`);
+
+        // Resize to preserve original aspect ratio
+        // Use the current width and calculate correct height
+        const newHeight = node.width / originalAspectRatio;
+
+        const resizableNode = node as SceneNode & { resize: (w: number, h: number) => void };
+        resizableNode.resize(node.width, newHeight);
+
+        console.log(`  Fixed:    ${node.width.toFixed(1)}x${newHeight.toFixed(1)} (ratio: ${(node.width / newHeight).toFixed(3)})`);
+        preservedCount++;
+      }
+    }
+
+    // Recurse into children
+    if ("children" in node) {
+      for (const child of (node as FrameNode | GroupNode).children) {
+        walkAndPreserve(child);
+      }
+    }
+  }
+
+  // Walk the entire tree
+  for (const child of frame.children) {
+    walkAndPreserve(child);
+  }
+
+  console.log(`[preserveAspectRatios] Complete. Fixed ${preservedCount} nodes with distorted aspect ratios`);
 }
 
 /**
