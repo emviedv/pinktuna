@@ -1040,6 +1040,29 @@ function applyAbsolutePositioning(
     if (isInsideComponentInstance(node)) continue;
     if (!("layoutPositioning" in node)) continue;
 
+    // SKIP absolute positioning for items nested inside containers
+    // Only apply to direct children of the root frame
+    if (node.parent && node.parent.id !== frame.id) {
+      console.log(`[applyAbsolutePositioning] SKIP nested node: ${spec.nodeName} (parent: ${node.parent.name})`);
+      console.log(`  Node is inside a container, keeping in auto-layout flow`);
+      continue;
+    }
+
+    // SKIP absolute positioning for CONTAINER frames (frames with auto-layout or children)
+    // Containers should stay in the root's auto-layout flow; only leaf elements get absolute positioning
+    if (node.type === "FRAME") {
+      const frameNode = node as FrameNode;
+      const hasAutoLayout = frameNode.layoutMode !== "NONE";
+      const hasChildren = frameNode.children.length > 0;
+
+      if (hasAutoLayout || hasChildren) {
+        console.log(`[applyAbsolutePositioning] SKIP container frame: ${spec.nodeName}`);
+        console.log(`  Has auto-layout: ${hasAutoLayout}, Has children: ${hasChildren}`);
+        console.log(`  Containers stay in auto-layout flow, only leaf elements get absolute positioning`);
+        continue;
+      }
+    }
+
     const originalPos = originalPositions.get(nodeId);
     if (!originalPos) continue;
 
