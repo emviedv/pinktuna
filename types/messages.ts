@@ -13,10 +13,10 @@ export type UIToPluginMessage =
 
 // Messages from Plugin to UI
 export type PluginToUIMessage =
-  | { type: "SELECTION_CHANGED"; hasValidSelection: boolean; frameName?: string }
-  | { type: "GENERATION_STARTED" }
-  | { type: "GENERATION_PROGRESS"; stage: string; detail?: string }
-  | { type: "GENERATION_COMPLETE"; variantId: string; variantName: string }
+  | { type: "SELECTION_CHANGED"; hasValidSelection: boolean; frameCount: number; frameNames: string[] }
+  | { type: "GENERATION_STARTED"; totalFrames: number }
+  | { type: "GENERATION_PROGRESS"; stage: string; detail?: string; currentFrame?: number; totalFrames?: number }
+  | { type: "GENERATION_COMPLETE"; variantId: string; variantName: string; totalVariants: number }
   | { type: "GENERATION_ERROR"; error: string }
   | { type: "API_KEY_STATUS"; hasKey: boolean };
 

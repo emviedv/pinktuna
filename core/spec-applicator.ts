@@ -27,8 +27,20 @@ interface OriginalPosition {
  * - UNIFORM_SCALED: Scale positions AND dimensions uniformly (preserves edge gaps but distorts components)
  * - AI_DETERMINED: Use AI-specified x/y coordinates directly
  * - HYBRID: Per-element strategy based on semantic group's preserveSpacing flag
+ * - AD_X_PRESERVE_Y_AI: Preserve X spacing from Mode A, use AI Y from Mode D
+ * - AD_X_AI_Y_PRESERVE: Use AI X from Mode D, preserve Y spacing from Mode A
+ * - AD_BLEND_50: Equal 50/50 blend of Mode A and Mode D positions
+ * - AD_BLEND_70_30: Weighted 70% A + 30% D blend (favors spacing preservation)
  */
-type PositioningMode = "PRESERVE_SPACING" | "UNIFORM_SCALED" | "AI_DETERMINED" | "HYBRID";
+type PositioningMode =
+  | "PRESERVE_SPACING"
+  | "UNIFORM_SCALED"
+  | "AI_DETERMINED"
+  | "HYBRID"
+  | "AD_X_PRESERVE_Y_AI"
+  | "AD_X_AI_Y_PRESERVE"
+  | "AD_BLEND_50"
+  | "AD_BLEND_70_30";
 
 /**
  * Capture original positions of all nodes before resize.
@@ -147,7 +159,15 @@ function deepCloneSpec(spec: LayoutSpec): LayoutSpec {
 
 /**
  * Apply a layout specification to create TikTok variant(s).
- * Creates 4 comparison variants with different positioning modes (including HYBRID).
+ * Creates 8 comparison variants with different positioning modes:
+ * - A) HYBRID: Per-element strategy based on preserveSpacing
+ * - B) PRESERVE_SPACING: Original spacing, centered horizontally
+ * - C) UNIFORM_SCALED: Positions AND sizes scaled uniformly
+ * - D) AI_DETERMINED: Using AI-specified coordinates
+ * - E) AD_X_PRESERVE_Y_AI: Preserve X spacing, use AI Y
+ * - F) AD_X_AI_Y_PRESERVE: Use AI X, preserve Y spacing
+ * - G) AD_BLEND_50: 50% A + 50% D position blend
+ * - H) AD_BLEND_70_30: 70% A + 30% D position blend
  *
  * @param sourceFrame - The original frame to transform
  * @param spec - The layout specification from the AI
@@ -157,17 +177,22 @@ export async function applyLayoutSpec(
   sourceFrame: FrameNode,
   spec: LayoutSpec
 ): Promise<FrameNode> {
-  console.log("[spec-applicator] applyLayoutSpec started - COMPARISON MODE (4 variants with HYBRID)");
+  console.log("[spec-applicator] applyLayoutSpec started - COMPARISON MODE (8 variants: A-H)");
   console.log("[spec-applicator] Source frame:", sourceFrame.name, "id:", sourceFrame.id);
   console.log("[spec-applicator] Spec nodes count:", spec.nodes.length);
   console.log("[spec-applicator] Semantic groups:", spec.semanticGroups?.length ?? 0, spec.semanticGroups?.filter(g => g.preserveSpacing).length ?? 0, "with preserveSpacing");
 
-  // Define the 4 positioning modes to compare
+  // Define the 8 positioning modes to compare (original 4 + 4 A+D hybrids)
   const modes: Array<{ mode: PositioningMode; label: string; description: string }> = [
     { mode: "HYBRID", label: "A) Hybrid", description: "Per-element strategy based on preserveSpacing" },
     { mode: "PRESERVE_SPACING", label: "B) Preserve Gap", description: "Original spacing, centered horizontally" },
     { mode: "UNIFORM_SCALED", label: "C) Uniform All", description: "Positions AND sizes scaled 0.9x" },
     { mode: "AI_DETERMINED", label: "D) AI Position", description: "Using AI coordinates" },
+    // NEW A+D Hybrids
+    { mode: "AD_X_PRESERVE_Y_AI", label: "E) A's X + D's Y", description: "Preserve X spacing, AI Y position" },
+    { mode: "AD_X_AI_Y_PRESERVE", label: "F) D's X + A's Y", description: "AI X position, preserve Y spacing" },
+    { mode: "AD_BLEND_50", label: "G) 50/50 Blend", description: "50% A + 50% D position blend" },
+    { mode: "AD_BLEND_70_30", label: "H) 70A/30D", description: "70% A + 30% D position blend" },
   ];
 
   // Get or create the dedicated TikTok outputs page
@@ -261,6 +286,18 @@ export async function applyLayoutSpec(
     applyRotation(variant, specMap);
     applyAnchorPoints(variant, specMap);
     applyZIndexOrdering(variant, specMap);
+
+    // FINAL DIMENSION ENFORCEMENT - ensure frame is exactly TikTok size
+    // Auto-layout and other transforms can sometimes change frame dimensions
+    if (variant.width !== TIKTOK_WIDTH || variant.height !== TIKTOK_HEIGHT) {
+      console.log(`[spec-applicator] ⚠️ Frame dimensions drifted: ${variant.width}x${variant.height}`);
+      console.log(`[spec-applicator] >>> Enforcing TikTok dimensions: ${TIKTOK_WIDTH}x${TIKTOK_HEIGHT}`);
+      variant.resize(TIKTOK_WIDTH, TIKTOK_HEIGHT);
+    }
+    // Ensure sizing mode is FIXED so dimensions don't change
+    variant.layoutSizingHorizontal = "FIXED";
+    variant.layoutSizingVertical = "FIXED";
+    console.log(`[spec-applicator] Final frame: ${variant.width}x${variant.height} (sizing: FIXED)`);
 
     variants.push(variant);
     console.log(`[spec-applicator] Variant ${label} complete`);
@@ -1317,6 +1354,64 @@ function applyAbsolutePositioning(
         }
 
         console.log(`  [HYBRID] ${spec.nodeName}: ${strategyUsed}`);
+        break;
+
+      case "AD_X_PRESERVE_Y_AI":
+        // X from Mode A (preserve spacing + offset), Y from Mode D (AI coords)
+        newX = originalPos.x + xOffset;
+        if (spec.y !== undefined) {
+          newY = spec.y;
+          console.log(`  [AD_X_PRESERVE_Y_AI] X: preserve spacing, Y: AI`);
+          console.log(`    X: ${originalPos.x.toFixed(1)} + ${xOffset.toFixed(1)} = ${newX.toFixed(1)}`);
+          console.log(`    Y: AI specified = ${newY.toFixed(1)}`);
+        } else {
+          // Fallback if no AI Y coord
+          newY = originalPos.y * uniformScale + yOffset;
+          console.log(`  [AD_X_PRESERVE_Y_AI] X: preserve spacing, Y: scaled (no AI coord)`);
+        }
+        break;
+
+      case "AD_X_AI_Y_PRESERVE":
+        // X from Mode D (AI coords), Y from Mode A (scaled + offset)
+        newY = originalPos.y * uniformScale + yOffset;
+        if (spec.x !== undefined) {
+          newX = spec.x;
+          console.log(`  [AD_X_AI_Y_PRESERVE] X: AI, Y: preserve spacing`);
+          console.log(`    X: AI specified = ${newX.toFixed(1)}`);
+          console.log(`    Y: ${originalPos.y.toFixed(1)} * ${uniformScale.toFixed(3)} + ${yOffset.toFixed(1)} = ${newY.toFixed(1)}`);
+        } else {
+          // Fallback if no AI X coord
+          newX = originalPos.x + xOffset;
+          console.log(`  [AD_X_AI_Y_PRESERVE] X: preserve (no AI coord), Y: preserve spacing`);
+        }
+        break;
+
+      case "AD_BLEND_50":
+        // 50% blend of Mode A and Mode D positions
+        const a50X = originalPos.x + xOffset;
+        const a50Y = originalPos.y * uniformScale + yOffset;
+        const d50X = spec.x ?? a50X;
+        const d50Y = spec.y ?? a50Y;
+        newX = (a50X + d50X) / 2;
+        newY = (a50Y + d50Y) / 2;
+        console.log(`  [AD_BLEND_50] 50% A + 50% D blend`);
+        console.log(`    A position: (${a50X.toFixed(1)}, ${a50Y.toFixed(1)})`);
+        console.log(`    D position: (${d50X.toFixed(1)}, ${d50Y.toFixed(1)})`);
+        console.log(`    Blended:    (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
+        break;
+
+      case "AD_BLEND_70_30":
+        // 70% Mode A + 30% Mode D blend
+        const a70X = originalPos.x + xOffset;
+        const a70Y = originalPos.y * uniformScale + yOffset;
+        const d30X = spec.x ?? a70X;
+        const d30Y = spec.y ?? a70Y;
+        newX = 0.7 * a70X + 0.3 * d30X;
+        newY = 0.7 * a70Y + 0.3 * d30Y;
+        console.log(`  [AD_BLEND_70_30] 70% A + 30% D blend`);
+        console.log(`    A position: (${a70X.toFixed(1)}, ${a70Y.toFixed(1)})`);
+        console.log(`    D position: (${d30X.toFixed(1)}, ${d30Y.toFixed(1)})`);
+        console.log(`    Blended:    (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
         break;
     }
 

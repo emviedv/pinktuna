@@ -10,26 +10,42 @@ import type { NodeTreeItem } from "../types/layout-spec";
 /**
  * Get the currently selected frame node.
  * Returns null if selection is invalid (not exactly one frame).
+ * @deprecated Use getSelectedFrames() for multi-frame support
  */
 export function getSelectedFrame(): FrameNode | null {
+  const frames = getSelectedFrames();
+  return frames.length === 1 ? frames[0] : null;
+}
+
+/**
+ * Get all currently selected frame nodes.
+ * Filters out non-frame selections and returns valid frames.
+ * Returns empty array if no valid frames are selected.
+ */
+export function getSelectedFrames(): FrameNode[] {
   const selection = figma.currentPage.selection;
-  console.log("[selection] getSelectedFrame - selection count:", selection.length);
+  console.log("[selection] getSelectedFrames - selection count:", selection.length);
 
-  if (selection.length !== 1) {
-    console.log("[selection] Invalid: not exactly one node selected");
-    return null;
+  if (selection.length === 0) {
+    console.log("[selection] No nodes selected");
+    return [];
   }
 
-  const node = selection[0];
-  console.log("[selection] Selected node type:", node.type, "name:", node.name);
+  // Filter to only FRAME nodes
+  const frames = selection.filter((node): node is FrameNode => {
+    if (node.type !== "FRAME") {
+      console.log("[selection] Skipping non-frame:", node.type, node.name);
+      return false;
+    }
+    return true;
+  });
 
-  if (node.type !== "FRAME") {
-    console.log("[selection] Invalid: selected node is not a FRAME");
-    return null;
+  console.log("[selection] Valid frames selected:", frames.length);
+  for (const frame of frames) {
+    console.log("[selection]   -", frame.name, "id:", frame.id, "size:", frame.width, "x", frame.height);
   }
 
-  console.log("[selection] Valid frame selected:", node.name, "id:", node.id);
-  return node;
+  return frames;
 }
 
 /**

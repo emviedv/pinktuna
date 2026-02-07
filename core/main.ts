@@ -12,7 +12,7 @@
 
 import type { UIToPluginMessage, PluginToUIMessage } from "../types/messages";
 import { getUIHtml } from "../ui/template";
-import { getSelectedFrame, buildNodeTree } from "./selection";
+import { getSelectedFrames, buildNodeTree } from "./selection";
 import { exportFrameAsBase64 } from "./image-export";
 import { generateLayoutSpec, setApiKey, hasApiKey } from "./ai-service";
 import { applyLayoutSpec } from "./spec-applicator";
@@ -62,12 +62,14 @@ figma.ui.onmessage = async (msg: UIToPluginMessage) => {
  * Send selection status to UI.
  */
 function notifySelectionChange(): void {
-  const frame = getSelectedFrame();
-  console.log("[main] notifySelectionChange - valid:", frame !== null, "name:", frame?.name);
+  const frames = getSelectedFrames();
+  const frameNames = frames.map(f => f.name);
+  console.log("[main] notifySelectionChange - count:", frames.length, "names:", frameNames.join(", "));
   sendToUI({
     type: "SELECTION_CHANGED",
-    hasValidSelection: frame !== null,
-    frameName: frame?.name,
+    hasValidSelection: frames.length > 0,
+    frameCount: frames.length,
+    frameNames: frameNames,
   });
 }
 
@@ -85,17 +87,18 @@ function notifyApiKeyStatus(): void {
 
 /**
  * Handle the generate TikTok variant request.
+ * Supports multiple selected frames - processes each one sequentially.
  */
 async function handleGenerate(): Promise<void> {
   console.log("[main] handleGenerate started");
 
-  const frame = getSelectedFrame();
+  const frames = getSelectedFrames();
 
-  if (!frame) {
-    console.log("[main] ERROR: No valid frame selected");
+  if (frames.length === 0) {
+    console.log("[main] ERROR: No valid frames selected");
     sendToUI({
       type: "GENERATION_ERROR",
-      error: "Please select a single frame",
+      error: "Please select one or more frames",
     });
     return;
   }
@@ -109,73 +112,98 @@ async function handleGenerate(): Promise<void> {
     return;
   }
 
+  const totalFrames = frames.length;
+  console.log("[main] Processing", totalFrames, "frame(s)");
+
   try {
-    sendToUI({ type: "GENERATION_STARTED" });
-    console.log("[main] Generation started for frame:", frame.name, "id:", frame.id);
-    console.log("[main] Frame dimensions:", frame.width, "x", frame.height);
+    sendToUI({ type: "GENERATION_STARTED", totalFrames });
 
-    // Step 1: Export frame as image
-    console.log("[main] Step 1: Exporting frame as image...");
-    sendToUI({
-      type: "GENERATION_PROGRESS",
-      stage: "Exporting frame...",
-      detail: "Creating image for AI analysis",
-    });
-    const imageBase64 = await exportFrameAsBase64(frame);
-    console.log("[main] Image exported, base64 length:", imageBase64.length);
+    const allVariants: FrameNode[] = [];
 
-    // Step 2: Build node tree
-    console.log("[main] Step 2: Building node tree...");
-    sendToUI({
-      type: "GENERATION_PROGRESS",
-      stage: "Analyzing structure...",
-      detail: "Building node tree",
-    });
-    const nodeTree = buildNodeTree(frame);
-    console.log("[main] Node tree built, root:", nodeTree.name, "children:", nodeTree.children?.length ?? 0);
+    // Process each frame sequentially
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      const frameNum = i + 1;
 
-    // Step 3: Call AI to get layout spec
-    console.log("[main] Step 3: Calling AI for layout spec...");
-    sendToUI({
-      type: "GENERATION_PROGRESS",
-      stage: "AI analyzing...",
-      detail: "Generating TikTok layout specification",
-    });
-    const layoutSpec = await generateLayoutSpec(
-      imageBase64,
-      nodeTree,
-      frame.width,
-      frame.height
-    );
-    console.log("[main] Layout spec received, nodes:", layoutSpec.nodes.length);
-    console.log("[main] Layout spec reasoning:", layoutSpec.reasoning);
+      console.log(`\n${"=".repeat(70)}`);
+      console.log(`[main] Processing frame ${frameNum}/${totalFrames}: ${frame.name}`);
+      console.log(`${"=".repeat(70)}`);
+      console.log("[main] Frame dimensions:", frame.width, "x", frame.height);
 
-    // Step 4: Apply the layout spec
-    console.log("[main] Step 4: Applying layout spec...");
-    sendToUI({
-      type: "GENERATION_PROGRESS",
-      stage: "Creating variant...",
-      detail: "Applying layout to TikTok format",
-    });
-    const variant = await applyLayoutSpec(frame, layoutSpec);
-    console.log("[main] Variant created:", variant.name, "id:", variant.id);
+      // Step 1: Export frame as image
+      console.log("[main] Step 1: Exporting frame as image...");
+      sendToUI({
+        type: "GENERATION_PROGRESS",
+        stage: `Exporting frame ${frameNum}/${totalFrames}...`,
+        detail: `Creating image for AI analysis: ${frame.name}`,
+        currentFrame: frameNum,
+        totalFrames,
+      });
+      const imageBase64 = await exportFrameAsBase64(frame);
+      console.log("[main] Image exported, base64 length:", imageBase64.length);
 
-    // Switch to the output page where the variant now lives
-    const outputPage = variant.parent as PageNode;
+      // Step 2: Build node tree
+      console.log("[main] Step 2: Building node tree...");
+      sendToUI({
+        type: "GENERATION_PROGRESS",
+        stage: `Analyzing structure ${frameNum}/${totalFrames}...`,
+        detail: `Building node tree: ${frame.name}`,
+        currentFrame: frameNum,
+        totalFrames,
+      });
+      const nodeTree = buildNodeTree(frame);
+      console.log("[main] Node tree built, root:", nodeTree.name, "children:", nodeTree.children?.length ?? 0);
+
+      // Step 3: Call AI to get layout spec
+      console.log("[main] Step 3: Calling AI for layout spec...");
+      sendToUI({
+        type: "GENERATION_PROGRESS",
+        stage: `AI analyzing ${frameNum}/${totalFrames}...`,
+        detail: `Generating TikTok layout: ${frame.name}`,
+        currentFrame: frameNum,
+        totalFrames,
+      });
+      const layoutSpec = await generateLayoutSpec(
+        imageBase64,
+        nodeTree,
+        frame.width,
+        frame.height
+      );
+      console.log("[main] Layout spec received, nodes:", layoutSpec.nodes.length);
+      console.log("[main] Layout spec reasoning:", layoutSpec.reasoning);
+
+      // Step 4: Apply the layout spec
+      console.log("[main] Step 4: Applying layout spec...");
+      sendToUI({
+        type: "GENERATION_PROGRESS",
+        stage: `Creating variants ${frameNum}/${totalFrames}...`,
+        detail: `Applying layout: ${frame.name}`,
+        currentFrame: frameNum,
+        totalFrames,
+      });
+      const variant = await applyLayoutSpec(frame, layoutSpec);
+      console.log("[main] Variant created:", variant.name, "id:", variant.id);
+
+      allVariants.push(variant);
+    }
+
+    // Switch to the output page where variants live
+    const outputPage = allVariants[0].parent as PageNode;
     console.log("[main] Switching to output page:", outputPage.name);
     await figma.setCurrentPageAsync(outputPage);
 
-    // Select the new variant
-    figma.currentPage.selection = [variant];
-    figma.viewport.scrollAndZoomIntoView([variant]);
-    console.log("[main] Variant selected and scrolled into view");
+    // Select all new variants
+    figma.currentPage.selection = allVariants;
+    figma.viewport.scrollAndZoomIntoView(allVariants);
+    console.log("[main] All variants selected and scrolled into view");
 
     sendToUI({
       type: "GENERATION_COMPLETE",
-      variantId: variant.id,
-      variantName: variant.name,
+      variantId: allVariants[0].id,
+      variantName: allVariants.map(v => v.name).join(", "),
+      totalVariants: allVariants.length,
     });
-    console.log("[main] Generation complete!");
+    console.log("[main] Generation complete! Created", allVariants.length, "variant set(s)");
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("[main] ERROR:", errorMessage);
