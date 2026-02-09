@@ -1718,22 +1718,26 @@ interface CollisionRect {
   y: number;
   width: number;
   height: number;
+  isAbsolute: boolean;
+  isDirectChild: boolean;
+  depth: number;
 }
 
 /**
- * Detect and resolve collisions between absolutely-positioned elements
- * in the NATIVE_PLUS_ABSOLUTE mode. After combining native Figma layout
- * with absolute positioning, elements may overlap because the two systems
- * don't coordinate. This function:
+ * Detect and resolve collisions between elements in the NATIVE_PLUS_ABSOLUTE mode.
+ * After combining native Figma layout with absolute positioning, elements may overlap
+ * because the two systems don't coordinate.
  *
- * 1. Collects all absolutely-positioned direct children of the frame
- * 2. Detects overlapping pairs (bounding-box intersection)
- * 3. Iteratively nudges overlapping elements apart along the axis of
- *    least penetration, respecting TikTok safety zones
- * 4. Logs before/after state for debugging
+ * This function checks ALL visible nodes (not just absolute-positioned ones) by:
+ * 1. Logging the full frame child tree for debugging
+ * 2. Collecting all visible nodes with their absolute position within the frame
+ * 3. Detecting out-of-bounds / clipping issues
+ * 4. Detecting overlapping pairs (bounding-box intersection)
+ * 5. Resolving collisions by nudging movable elements (absolute or direct children)
+ * 6. Clamping to TikTok safety zones
  *
  * @param frame - The variant frame after both native and absolute layout
- * @param specMap - Node specs (used to identify absolute nodes)
+ * @param specMap - Node specs from the AI
  */
 function detectAndResolveCollisions(
   frame: FrameNode,
@@ -1742,48 +1746,194 @@ function detectAndResolveCollisions(
   console.log("╔══════════════════════════════════════════════════════════════════╗");
   console.log("║ [detectAndResolveCollisions] NATIVE+ABS Collision Detection     ║");
   console.log("╚══════════════════════════════════════════════════════════════════╝");
+  console.log(`[detectAndResolveCollisions] Frame: "${frame.name}" (${frame.id}), size: ${frame.width}x${frame.height}`);
+  console.log(`[detectAndResolveCollisions] Frame layoutMode: ${(frame as any).layoutMode ?? "N/A"}, clipsContent: ${(frame as any).clipsContent ?? "N/A"}`);
+  console.log(`[detectAndResolveCollisions] specMap entries: ${specMap.size}`);
+  console.log(`[detectAndResolveCollisions] Direct children count: ${frame.children.length}`);
 
-  // TikTok safety bounds for clamping after nudge
+  // TikTok safety bounds
+  const FRAME_WIDTH = frame.width;
+  const FRAME_HEIGHT = frame.height;
   const EDGE_PADDING = 60;
   const TOP_SAFE = 154;
   const BOTTOM_SAFE = 1248;
-  const MIN_GAP = 8; // Minimum gap to enforce between elements after resolution
+  const MIN_GAP = 8;
 
   // ============================================
-  // STEP 1: Collect absolutely-positioned direct children
+  // STEP 1: Log full child tree for debugging
   // ============================================
-  const rects: CollisionRect[] = [];
+  console.log("[detectAndResolveCollisions] ═══ FULL FRAME CHILD TREE ═══");
 
-  for (const child of frame.children) {
-    if (!("layoutPositioning" in child)) continue;
-    const positioned = child as SceneNode & { layoutPositioning: string };
-    if (positioned.layoutPositioning !== "ABSOLUTE") continue;
+  function logTree(node: SceneNode, depth: number): void {
+    const indent = "  ".repeat(depth);
+    const vis = node.visible ? "VIS" : "HID";
+    const spec = specMap.get(node.id);
+    const specStr = spec
+      ? ` [SPEC vis=${spec.visible} order=${spec.order} pos=${spec.positioning ?? "AUTO"} wSz=${spec.widthSizing} hSz=${spec.heightSizing}${spec.scaleFactor ? " scale=" + spec.scaleFactor : ""}]`
+      : "";
+    const posStr = `(${node.x.toFixed(0)},${node.y.toFixed(0)}) ${node.width.toFixed(0)}x${node.height.toFixed(0)}`;
 
-    rects.push({
-      nodeId: child.id,
-      name: child.name,
-      x: child.x,
-      y: child.y,
-      width: child.width,
-      height: child.height,
-    });
+    let layoutStr = "";
+    if ("layoutPositioning" in node) {
+      layoutStr += ` layPos=${(node as any).layoutPositioning}`;
+    }
+    if ("layoutMode" in node) {
+      layoutStr += ` layMode=${(node as any).layoutMode}`;
+    }
+    if ("layoutWrap" in node) {
+      layoutStr += ` wrap=${(node as any).layoutWrap}`;
+    }
+
+    console.log(`${indent}[${vis}] ${node.type}: "${node.name}" (${node.id}) ${posStr}${layoutStr}${specStr}`);
+
+    if ("children" in node) {
+      for (const child of (node as FrameNode | GroupNode).children) {
+        logTree(child, depth + 1);
+      }
+    }
   }
 
-  console.log(`[detectAndResolveCollisions] Found ${rects.length} absolutely-positioned elements`);
+  for (const child of frame.children) {
+    logTree(child, 1);
+  }
+  console.log("[detectAndResolveCollisions] ═══ END CHILD TREE ═══");
+
+  // ============================================
+  // STEP 2: Collect ALL visible nodes with absolute position in frame
+  // ============================================
+  console.log("[detectAndResolveCollisions] STEP 2: Collecting all visible nodes...");
+
+  const rects: CollisionRect[] = [];
+
+  /**
+   * Compute a node's absolute position relative to the frame by walking up the parent chain.
+   */
+  function getAbsolutePositionInFrame(node: SceneNode): { x: number; y: number } {
+    let x = 0;
+    let y = 0;
+    let current: BaseNode | null = node;
+
+    while (current && current.id !== frame.id) {
+      if ("x" in current && "y" in current) {
+        x += (current as SceneNode).x;
+        y += (current as SceneNode).y;
+      }
+      current = current.parent;
+    }
+
+    return { x, y };
+  }
+
+  /**
+   * Recursively walk the tree and collect visible nodes.
+   * We collect:
+   * - All leaf nodes (no children) that are visible
+   * - All nodes that are in the specMap (the AI cares about them)
+   * - All direct children of the frame (to check for overlaps at the top level)
+   */
+  function collectNodes(parent: SceneNode, depth: number, isUnderFrame: boolean): void {
+    if (!("children" in parent)) return;
+
+    const children = (parent as FrameNode | GroupNode).children;
+    for (const child of children) {
+      // Check visibility
+      if (!child.visible) {
+        console.log(`[COLLECT] ${"  ".repeat(depth)}SKIP hidden: "${child.name}" (${child.id})`);
+        continue;
+      }
+
+      const isDirectChild = isUnderFrame;
+      const isAbsolute = "layoutPositioning" in child && (child as any).layoutPositioning === "ABSOLUTE";
+      const isInSpec = specMap.has(child.id);
+      const isLeaf = !("children" in child) || ((child as any).children?.length ?? 0) === 0;
+      const hasChildren = "children" in child && ((child as any).children?.length ?? 0) > 0;
+
+      // Collect this node if it's meaningful for collision detection:
+      // - Direct children of the frame (top-level elements that could overlap)
+      // - Leaf nodes in the spec (AI-specified elements)
+      // - Any absolute-positioned node
+      const shouldCollect = isDirectChild || (isInSpec && isLeaf) || isAbsolute;
+
+      if (shouldCollect) {
+        const absPos = getAbsolutePositionInFrame(child);
+        rects.push({
+          nodeId: child.id,
+          name: child.name,
+          x: absPos.x,
+          y: absPos.y,
+          width: child.width,
+          height: child.height,
+          isAbsolute,
+          isDirectChild,
+          depth,
+        });
+        console.log(
+          `[COLLECT] ${"  ".repeat(depth)}ADD: "${child.name}" (${child.id}) ` +
+          `absPos=(${absPos.x.toFixed(0)},${absPos.y.toFixed(0)}) ` +
+          `size=${child.width.toFixed(0)}x${child.height.toFixed(0)} ` +
+          `absolute=${isAbsolute} directChild=${isDirectChild} inSpec=${isInSpec} leaf=${isLeaf}`
+        );
+      } else {
+        console.log(
+          `[COLLECT] ${"  ".repeat(depth)}TRAVERSE: "${child.name}" (${child.id}) ` +
+          `type=${child.type} hasChildren=${hasChildren} inSpec=${isInSpec}`
+        );
+      }
+
+      // Recurse into containers (but not into the direct children again)
+      if (hasChildren) {
+        collectNodes(child, depth + 1, false);
+      }
+    }
+  }
+
+  collectNodes(frame as unknown as SceneNode, 0, true);
+  console.log(`[detectAndResolveCollisions] Total collected nodes: ${rects.length}`);
+
+  // Log summary of what we collected
+  const absoluteCount = rects.filter(r => r.isAbsolute).length;
+  const directChildCount = rects.filter(r => r.isDirectChild).length;
+  const nestedCount = rects.filter(r => !r.isDirectChild).length;
+  console.log(`[detectAndResolveCollisions] Absolute: ${absoluteCount}, Direct children: ${directChildCount}, Nested: ${nestedCount}`);
+
+  // ============================================
+  // STEP 3: Out-of-bounds / clipping detection
+  // ============================================
+  console.log("[detectAndResolveCollisions] STEP 3: Out-of-bounds check...");
+
+  for (const r of rects) {
+    const issues: string[] = [];
+    if (r.x < 0) issues.push(`LEFT off-frame by ${Math.abs(r.x).toFixed(0)}px`);
+    if (r.y < 0) issues.push(`TOP off-frame by ${Math.abs(r.y).toFixed(0)}px`);
+    if (r.x + r.width > FRAME_WIDTH) issues.push(`RIGHT overflows by ${(r.x + r.width - FRAME_WIDTH).toFixed(0)}px`);
+    if (r.y + r.height > FRAME_HEIGHT) issues.push(`BOTTOM overflows by ${(r.y + r.height - FRAME_HEIGHT).toFixed(0)}px`);
+    if (r.y < TOP_SAFE) issues.push(`in TOP danger zone (y=${r.y.toFixed(0)} < ${TOP_SAFE})`);
+    if (r.y + r.height > BOTTOM_SAFE) issues.push(`in BOTTOM danger zone (bottom=${(r.y + r.height).toFixed(0)} > ${BOTTOM_SAFE})`);
+
+    // Check if element is completely outside the frame (invisible)
+    const fullyOutside = r.x + r.width < 0 || r.x > FRAME_WIDTH || r.y + r.height < 0 || r.y > FRAME_HEIGHT;
+    if (fullyOutside) issues.push("COMPLETELY OUTSIDE FRAME - INVISIBLE");
+
+    if (issues.length > 0) {
+      console.log(`[OOB] ⚠️ "${r.name}": ${issues.join(", ")}`);
+    } else {
+      console.log(`[OOB] ✓ "${r.name}": within safe bounds`);
+    }
+  }
 
   if (rects.length < 2) {
-    console.log("[detectAndResolveCollisions] Fewer than 2 absolute elements, skipping collision detection");
+    console.log("[detectAndResolveCollisions] Fewer than 2 visible nodes collected, skipping overlap detection");
+    console.log("╔══════════════════════════════════════════════════════════════════╗");
+    console.log("║ [detectAndResolveCollisions] COMPLETE (no overlap check needed) ║");
+    console.log("╚══════════════════════════════════════════════════════════════════╝");
     return;
   }
 
-  // Log initial state
-  for (const r of rects) {
-    console.log(`[COLLISION-PRE] ${r.name}: (${r.x.toFixed(1)}, ${r.y.toFixed(1)}) ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
-  }
+  // ============================================
+  // STEP 4: Detect collisions (AABB intersection test)
+  // ============================================
+  console.log("[detectAndResolveCollisions] STEP 4: AABB collision detection...");
 
-  // ============================================
-  // STEP 2: Detect collisions (AABB intersection test)
-  // ============================================
   function rectsOverlap(a: CollisionRect, b: CollisionRect): boolean {
     return (
       a.x < b.x + b.width &&
@@ -1793,115 +1943,129 @@ function detectAndResolveCollisions(
     );
   }
 
-  /** Calculate overlap depth on each axis. Positive = overlapping. */
   function overlapDepth(a: CollisionRect, b: CollisionRect): { dx: number; dy: number } {
     const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
     const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
     return { dx: Math.max(0, overlapX), dy: Math.max(0, overlapY) };
   }
 
-  // Count initial collisions
   let initialCollisions = 0;
-  const collisionPairs: Array<{ i: number; j: number }> = [];
   for (let i = 0; i < rects.length; i++) {
     for (let j = i + 1; j < rects.length; j++) {
       if (rectsOverlap(rects[i], rects[j])) {
         const { dx, dy } = overlapDepth(rects[i], rects[j]);
-        console.log(`[COLLISION] ${rects[i].name} <-> ${rects[j].name}: overlap ${dx.toFixed(1)}px H, ${dy.toFixed(1)}px V`);
-        collisionPairs.push({ i, j });
+        const canResolve = (rects[i].isAbsolute || rects[i].isDirectChild) && (rects[j].isAbsolute || rects[j].isDirectChild);
+        console.log(
+          `[COLLISION] "${rects[i].name}" <-> "${rects[j].name}": ` +
+          `overlap H=${dx.toFixed(1)}px V=${dy.toFixed(1)}px ` +
+          `(resolvable: ${canResolve ? "YES" : "NO - nested nodes"})`
+        );
         initialCollisions++;
       }
     }
   }
 
-  console.log(`[detectAndResolveCollisions] Initial collisions detected: ${initialCollisions}`);
+  console.log(`[detectAndResolveCollisions] Total collisions detected: ${initialCollisions}`);
 
   if (initialCollisions === 0) {
     console.log("[detectAndResolveCollisions] No collisions found - layout is clean");
+    console.log("╔══════════════════════════════════════════════════════════════════╗");
+    console.log("║ [detectAndResolveCollisions] COMPLETE (no collisions)           ║");
+    console.log("╚══════════════════════════════════════════════════════════════════╝");
     return;
   }
 
   // ============================================
-  // STEP 3: Resolve collisions iteratively
+  // STEP 5: Resolve collisions iteratively
   // ============================================
-  // Strategy: nudge along the axis of LEAST penetration to minimise visual disruption.
-  // Repeat up to MAX_ITERATIONS in case resolving one pair creates a new overlap.
-  const MAX_ITERATIONS = 10;
-  let iteration = 0;
-  let resolved = false;
+  // We can only nudge elements that are direct children of the frame OR absolutely positioned.
+  // Filter to movable rects for resolution.
+  console.log("[detectAndResolveCollisions] STEP 5: Resolving collisions...");
 
-  while (!resolved && iteration < MAX_ITERATIONS) {
-    iteration++;
-    resolved = true; // optimistic
+  const movableRects = rects.filter(r => r.isAbsolute || r.isDirectChild);
+  console.log(`[detectAndResolveCollisions] Movable elements for resolution: ${movableRects.length}`);
 
-    for (let i = 0; i < rects.length; i++) {
-      for (let j = i + 1; j < rects.length; j++) {
-        if (!rectsOverlap(rects[i], rects[j])) continue;
+  for (const r of movableRects) {
+    console.log(`[COLLISION-PRE] "${r.name}": (${r.x.toFixed(1)}, ${r.y.toFixed(1)}) ${r.width.toFixed(1)}x${r.height.toFixed(1)} absolute=${r.isAbsolute}`);
+  }
 
-        resolved = false; // still have work to do
-        const a = rects[i];
-        const b = rects[j];
-        const { dx, dy } = overlapDepth(a, b);
+  if (movableRects.length >= 2) {
+    const MAX_ITERATIONS = 10;
+    let iteration = 0;
+    let resolved = false;
 
-        // Determine which axis has less penetration and nudge along that axis
-        if (dx <= dy) {
-          // Resolve horizontally - push apart by (dx + MIN_GAP) / 2 each
-          const nudge = (dx + MIN_GAP) / 2;
-          const aCenterX = a.x + a.width / 2;
-          const bCenterX = b.x + b.width / 2;
+    while (!resolved && iteration < MAX_ITERATIONS) {
+      iteration++;
+      resolved = true;
 
-          if (aCenterX <= bCenterX) {
-            // a is to the left, push a left and b right
-            a.x -= nudge;
-            b.x += nudge;
+      for (let i = 0; i < movableRects.length; i++) {
+        for (let j = i + 1; j < movableRects.length; j++) {
+          if (!rectsOverlap(movableRects[i], movableRects[j])) continue;
+
+          resolved = false;
+          const a = movableRects[i];
+          const b = movableRects[j];
+          const { dx, dy } = overlapDepth(a, b);
+
+          if (dx <= dy) {
+            // Resolve horizontally
+            const nudge = (dx + MIN_GAP) / 2;
+            const aCenterX = a.x + a.width / 2;
+            const bCenterX = b.x + b.width / 2;
+
+            if (aCenterX <= bCenterX) {
+              a.x -= nudge;
+              b.x += nudge;
+            } else {
+              a.x += nudge;
+              b.x -= nudge;
+            }
+            console.log(`[RESOLVE iter=${iteration}] "${a.name}" <-> "${b.name}": nudge H ±${nudge.toFixed(1)}px`);
           } else {
-            a.x += nudge;
-            b.x -= nudge;
-          }
-          console.log(`[RESOLVE iter=${iteration}] ${a.name} <-> ${b.name}: nudge H ±${nudge.toFixed(1)}px`);
-        } else {
-          // Resolve vertically - push apart by (dy + MIN_GAP) / 2 each
-          const nudge = (dy + MIN_GAP) / 2;
-          const aCenterY = a.y + a.height / 2;
-          const bCenterY = b.y + b.height / 2;
+            // Resolve vertically
+            const nudge = (dy + MIN_GAP) / 2;
+            const aCenterY = a.y + a.height / 2;
+            const bCenterY = b.y + b.height / 2;
 
-          if (aCenterY <= bCenterY) {
-            // a is above, push a up and b down
-            a.y -= nudge;
-            b.y += nudge;
-          } else {
-            a.y += nudge;
-            b.y -= nudge;
+            if (aCenterY <= bCenterY) {
+              a.y -= nudge;
+              b.y += nudge;
+            } else {
+              a.y += nudge;
+              b.y -= nudge;
+            }
+            console.log(`[RESOLVE iter=${iteration}] "${a.name}" <-> "${b.name}": nudge V ±${nudge.toFixed(1)}px`);
           }
-          console.log(`[RESOLVE iter=${iteration}] ${a.name} <-> ${b.name}: nudge V ±${nudge.toFixed(1)}px`);
         }
       }
     }
-  }
 
-  if (!resolved) {
-    console.log(`[detectAndResolveCollisions] WARNING: Could not fully resolve all collisions after ${MAX_ITERATIONS} iterations`);
+    if (!resolved) {
+      console.log(`[detectAndResolveCollisions] WARNING: Could not fully resolve after ${MAX_ITERATIONS} iterations`);
+    } else {
+      console.log(`[detectAndResolveCollisions] Collisions resolved in ${iteration} iteration(s)`);
+    }
   } else {
-    console.log(`[detectAndResolveCollisions] All collisions resolved in ${iteration} iteration(s)`);
+    console.log("[detectAndResolveCollisions] Fewer than 2 movable elements, skipping resolution (collisions logged above)");
   }
 
   // ============================================
-  // STEP 4: Clamp to TikTok safety zones
+  // STEP 6: Clamp to TikTok safety zones
   // ============================================
-  console.log("[detectAndResolveCollisions] STEP 4: Clamping to TikTok safety zones");
+  console.log("[detectAndResolveCollisions] STEP 6: Clamping to TikTok safety zones...");
 
-  for (const r of rects) {
+  for (const r of movableRects) {
     const originalX = r.x;
     const originalY = r.y;
 
-    // Horizontal clamping: keep within edge padding
+    // Horizontal clamping
     if (r.x < EDGE_PADDING) {
       r.x = EDGE_PADDING;
-    } else if (r.x + r.width > frame.width - EDGE_PADDING) {
-      r.x = frame.width - EDGE_PADDING - r.width;
+    } else if (r.x + r.width > FRAME_WIDTH - EDGE_PADDING) {
+      r.x = FRAME_WIDTH - EDGE_PADDING - r.width;
     }
 
-    // Vertical clamping: keep within TikTok safe zone
+    // Vertical clamping
     if (r.y < TOP_SAFE) {
       r.y = TOP_SAFE;
     } else if (r.y + r.height > BOTTOM_SAFE) {
@@ -1909,44 +2073,64 @@ function detectAndResolveCollisions(
     }
 
     if (r.x !== originalX || r.y !== originalY) {
-      console.log(`[CLAMP] ${r.name}: (${originalX.toFixed(1)}, ${originalY.toFixed(1)}) -> (${r.x.toFixed(1)}, ${r.y.toFixed(1)})`);
+      console.log(`[CLAMP] "${r.name}": (${originalX.toFixed(1)}, ${originalY.toFixed(1)}) -> (${r.x.toFixed(1)}, ${r.y.toFixed(1)})`);
+    } else {
+      console.log(`[CLAMP] "${r.name}": no clamping needed`);
     }
   }
 
   // ============================================
-  // STEP 5: Apply resolved positions back to Figma nodes
+  // STEP 7: Apply resolved positions back to Figma nodes
   // ============================================
+  console.log("[detectAndResolveCollisions] STEP 7: Applying resolved positions...");
   const nodeMap = buildNodeMap(frame);
 
-  for (const r of rects) {
+  for (const r of movableRects) {
     const node = nodeMap.get(r.nodeId);
-    if (!node) continue;
+    if (!node) {
+      console.log(`[APPLY] ⚠️ "${r.name}" (${r.nodeId}): node NOT FOUND in nodeMap`);
+      continue;
+    }
+
+    const oldX = node.x;
+    const oldY = node.y;
+
+    // For direct children in auto-layout, we may need to set to ABSOLUTE first
+    if (r.isDirectChild && !r.isAbsolute) {
+      if ("layoutPositioning" in node) {
+        console.log(`[APPLY] "${r.name}": converting from AUTO to ABSOLUTE positioning for collision resolution`);
+        (node as any).layoutPositioning = "ABSOLUTE";
+      }
+    }
 
     node.x = r.x;
     node.y = r.y;
+    console.log(`[APPLY] "${r.name}": (${oldX.toFixed(1)}, ${oldY.toFixed(1)}) -> (${r.x.toFixed(1)}, ${r.y.toFixed(1)})`);
   }
 
   // ============================================
-  // STEP 6: Log final state and verify
+  // STEP 8: Log final state and verify
   // ============================================
+  console.log("[detectAndResolveCollisions] STEP 8: Final verification...");
+
   let remainingCollisions = 0;
-  for (let i = 0; i < rects.length; i++) {
-    for (let j = i + 1; j < rects.length; j++) {
-      if (rectsOverlap(rects[i], rects[j])) {
-        const { dx, dy } = overlapDepth(rects[i], rects[j]);
-        console.log(`[COLLISION-REMAINING] ${rects[i].name} <-> ${rects[j].name}: ${dx.toFixed(1)}px H, ${dy.toFixed(1)}px V`);
+  for (let i = 0; i < movableRects.length; i++) {
+    for (let j = i + 1; j < movableRects.length; j++) {
+      if (rectsOverlap(movableRects[i], movableRects[j])) {
+        const { dx, dy } = overlapDepth(movableRects[i], movableRects[j]);
+        console.log(`[COLLISION-REMAINING] "${movableRects[i].name}" <-> "${movableRects[j].name}": ${dx.toFixed(1)}px H, ${dy.toFixed(1)}px V`);
         remainingCollisions++;
       }
     }
   }
 
-  for (const r of rects) {
-    console.log(`[COLLISION-POST] ${r.name}: (${r.x.toFixed(1)}, ${r.y.toFixed(1)}) ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
+  for (const r of movableRects) {
+    console.log(`[COLLISION-POST] "${r.name}": (${r.x.toFixed(1)}, ${r.y.toFixed(1)}) ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
   }
 
   console.log("╔══════════════════════════════════════════════════════════════════╗");
   console.log(`║ [detectAndResolveCollisions] COMPLETE                            ║`);
-  console.log(`║ Initial collisions: ${String(initialCollisions).padEnd(3)} | Remaining: ${String(remainingCollisions).padEnd(3)} | Iterations: ${String(iteration).padEnd(2)} ║`);
+  console.log(`║ Collected: ${String(rects.length).padEnd(3)} | Movable: ${String(movableRects.length).padEnd(3)} | Collisions: ${String(initialCollisions).padEnd(3)} -> ${String(remainingCollisions).padEnd(3)} ║`);
   console.log("╚══════════════════════════════════════════════════════════════════╝");
 }
 
