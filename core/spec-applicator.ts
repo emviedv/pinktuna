@@ -2394,11 +2394,11 @@ function applyNativeFigmaLayout(
       console.log(`[applyNativeFigmaLayout]   Text set to FILL width, HUG height`);
     }
 
-    // For images/rectangles, maintain aspect ratio via constrainProportions
+    // For images/rectangles, maintain aspect ratio via lockAspectRatio
     else if (child.type === "RECTANGLE" || child.type === "ELLIPSE") {
-      if ("constrainProportions" in child) {
-        (child as RectangleNode).constrainProportions = true;
-        console.log(`[applyNativeFigmaLayout]   Enabled constrainProportions`);
+      if ("lockAspectRatio" in child) {
+        (child as RectangleNode).lockAspectRatio();
+        console.log(`[applyNativeFigmaLayout]   Locked aspect ratio`);
       }
       // Use FIXED for shapes - HUG doesn't work on rectangles/ellipses
       child.layoutSizingHorizontal = "FIXED";
