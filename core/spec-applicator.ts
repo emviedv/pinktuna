@@ -316,9 +316,9 @@ export async function applyLayoutSpec(
       applyNativeFigmaLayout(variant, specMap, originalWidth, originalHeight);
     } else if (mode === "NATIVE_PLUS_ABSOLUTE") {
       // Hybrid mode: apply native Figma features FIRST, then absolute positioning
-      // This combines wrap/constraints with precise element placement
+      // Only absolutify nodes explicitly marked positioning: "ABSOLUTE" in their spec
       applyNativeFigmaLayout(variant, specMap, originalWidth, originalHeight);
-      applyAbsolutePositioning(variant, specMap, originalPositions, originalWidth, originalHeight, "HYBRID", variantSpec.semanticGroups ?? []);
+      applyAbsolutePositioning(variant, specMap, originalPositions, originalWidth, originalHeight, "NATIVE_PLUS_ABSOLUTE", variantSpec.semanticGroups ?? []);
     } else if (mode === "NATIVE_SMART") {
       // Smart native mode: intelligent composition with visual hierarchy and rhythm
       applyNativeSmartLayout(variant, specMap, variantSpec.semanticGroups ?? [], originalWidth, originalHeight);
@@ -1221,8 +1221,17 @@ function applyAbsolutePositioning(
 
   // For HYBRID and AI_DETERMINED modes, reposition ALL direct children of the
   // root frame — these modes are designed to control the full composition layout.
-  // Other modes only reposition nodes explicitly marked positioning: "ABSOLUTE".
-  const repositionAllDirectChildren = mode === "HYBRID" || mode === "AI_DETERMINED";
+  // NATIVE_PLUS_ABSOLUTE and other non-composition modes only reposition nodes
+  // explicitly marked positioning: "ABSOLUTE".
+  const repositionAllDirectChildren =
+    mode === "HYBRID" ||
+    mode === "AI_DETERMINED" ||
+    mode === "PRESERVE_SPACING" ||
+    mode === "UNIFORM_SCALED" ||
+    mode === "AD_X_PRESERVE_Y_AI" ||
+    mode === "AD_X_AI_Y_PRESERVE" ||
+    mode === "AD_BLEND_50" ||
+    mode === "AD_BLEND_70_30";
 
   if (repositionAllDirectChildren) {
     console.log(`[applyAbsolutePositioning] Mode ${mode}: collecting ALL direct children for repositioning`);
@@ -2484,6 +2493,40 @@ function applyNativeSmartLayout(
   }
   console.log(`[applyNativeSmartLayout] Semantic map: ${nodeToRole.size} nodes with roles`);
 
+  /**
+   * Resolve the semantic role for a node. If the node itself isn't in the
+   * role map (e.g. it's a container created by convertToAutoLayout), check
+   * whether its children belong to a single role and inherit that role.
+   */
+  function resolveRole(node: SceneNode): string {
+    const direct = nodeToRole.get(node.id);
+    if (direct) return direct;
+
+    if ("children" in node) {
+      const childRoles = new Set<string>();
+      for (const child of (node as FrameNode).children) {
+        const childRole = nodeToRole.get(child.id);
+        if (childRole) childRoles.add(childRole);
+      }
+      if (childRoles.size === 1) {
+        const inherited = Array.from(childRoles)[0];
+        console.log(`[applyNativeSmartLayout] Inherited role "${inherited}" from children for container: ${node.name}`);
+        return inherited;
+      }
+      if (childRoles.size > 1) {
+        // Multiple roles — use the most prominent one (hero > product > cta > features > brand > metadata > decorative)
+        const priority = ["hero", "product", "cta", "features", "brand", "metadata", "decorative"];
+        for (const role of priority) {
+          if (childRoles.has(role)) {
+            console.log(`[applyNativeSmartLayout] Mixed roles in container ${node.name}, using highest priority: "${role}"`);
+            return role;
+          }
+        }
+      }
+    }
+    return "unknown";
+  }
+
   // ============================================
   // STEP 1: Configure root frame for VERTICAL flow (not wrap)
   // Smart composition uses deliberate vertical stacking
@@ -2516,7 +2559,7 @@ function applyNativeSmartLayout(
     if (!("layoutSizingHorizontal" in child)) continue;
     if (isInsideComponentInstance(child)) continue;
 
-    const role = nodeToRole.get(child.id) || "unknown";
+    const role = resolveRole(child);
     const nodeName = child.name;
 
     console.log(`[applyNativeSmartLayout] Processing: ${nodeName} (role: ${role})`);
