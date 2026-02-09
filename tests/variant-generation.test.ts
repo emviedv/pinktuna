@@ -204,8 +204,8 @@ describe("Variant Generation Regression Tests", () => {
   });
 
   describe("Variant Count Verification", () => {
-    test("should verify exactly 8 variants are created", () => {
-      const expectedVariants = 8;
+    test("should verify exactly 12 variants are created", () => {
+      const expectedVariants = 12;
       const mockVariants = [
         { name: "Test - A) Hybrid" },
         { name: "Test - B) Preserve" },
@@ -215,6 +215,10 @@ describe("Variant Generation Regression Tests", () => {
         { name: "Test - F) X_AI" },
         { name: "Test - G) Blend_50" },
         { name: "Test - H) Blend_70" },
+        { name: "Test - I) Native Figma" },
+        { name: "Test - J) Native+Abs" },
+        { name: "Test - K) Native Smart" },
+        { name: "Test - L) Native Grid" },
       ];
 
       // Simulate the verification logic
@@ -227,12 +231,12 @@ describe("Variant Generation Regression Tests", () => {
 
       expect(actualVariants).toBe(expectedVariants);
       expect(mockConsoleLog).toHaveBeenCalledWith(
-        "✅ [spec-applicator] VARIANT COUNT VERIFIED: Created exactly 8 variants as expected"
+        "✅ [spec-applicator] VARIANT COUNT VERIFIED: Created exactly 12 variants as expected"
       );
     });
 
     test("should detect variant count mismatch", () => {
-      const expectedVariants = 8;
+      const expectedVariants = 12;
       const mockVariants = [
         { name: "Test - A) Hybrid" },
         { name: "Test - B) Preserve" },
@@ -250,7 +254,7 @@ describe("Variant Generation Regression Tests", () => {
 
       expect(actualVariants).not.toBe(expectedVariants);
       expect(mockConsoleError).toHaveBeenCalledWith(
-        "❌ [spec-applicator] VARIANT COUNT MISMATCH: Expected 8 variants but created 2!"
+        "❌ [spec-applicator] VARIANT COUNT MISMATCH: Expected 12 variants but created 2!"
       );
       expect(mockConsoleError).toHaveBeenCalledWith(
         "[spec-applicator] This indicates a problem in the variant generation loop."
@@ -269,11 +273,15 @@ describe("Variant Generation Regression Tests", () => {
         { name: "Test Frame - F) X_AI_Y_Pre - X from AI, Y positions preserved" },
         { name: "Test Frame - G) Blend_50 - 50% blend of preserve/AI positioning" },
         { name: "Test Frame - H) Blend_70_30 - 70% preserve, 30% AI positioning" },
+        { name: "Test Frame - I) Native Figma - Wrap, grid, constraints only" },
+        { name: "Test Frame - J) Native+Abs - Native features + absolute positioning" },
+        { name: "Test Frame - K) Native Smart - Native API + visual hierarchy" },
+        { name: "Test Frame - L) Native Grid - Auto-layout grid patterns" },
       ];
 
       // Simulate the naming verification logic
       const variantNames = mockVariants.map(v => v.name);
-      const expectedPatterns = ["A) Hybrid", "B) Preserve", "C) Uniform", "D) AI", "E) X_Pre", "F) X_AI", "G) Blend_50", "H) Blend_70"];
+      const expectedPatterns = ["A) Hybrid", "B) Preserve", "C) Uniform", "D) AI", "E) X_Pre", "F) X_AI", "G) Blend_50", "H) Blend_70", "I) Native Figma", "J) Native+Abs", "K) Native Smart", "L) Native Grid"];
       const missingPatterns = expectedPatterns.filter(pattern => !variantNames.some(name => name.includes(pattern)));
 
       if (missingPatterns.length > 0) {
@@ -297,7 +305,7 @@ describe("Variant Generation Regression Tests", () => {
 
       // Simulate the naming verification logic
       const variantNames = mockVariants.map(v => v.name);
-      const expectedPatterns = ["A) Hybrid", "B) Preserve", "C) Uniform", "D) AI", "E) X_Pre", "F) X_AI", "G) Blend_50", "H) Blend_70"];
+      const expectedPatterns = ["A) Hybrid", "B) Preserve", "C) Uniform", "D) AI", "E) X_Pre", "F) X_AI", "G) Blend_50", "H) Blend_70", "I) Native Figma", "J) Native+Abs", "K) Native Smart", "L) Native Grid"];
       const missingPatterns = expectedPatterns.filter(pattern => !variantNames.some(name => name.includes(pattern)));
 
       if (missingPatterns.length > 0) {
@@ -306,9 +314,9 @@ describe("Variant Generation Regression Tests", () => {
         console.log(`✅ [spec-applicator] VARIANT NAMING VERIFIED: All expected patterns found`);
       }
 
-      expect(missingPatterns).toHaveLength(6);
+      expect(missingPatterns).toHaveLength(10);
       expect(mockConsoleWarn).toHaveBeenCalledWith(
-        "⚠️  [spec-applicator] NAMING WARNING: Missing expected variant patterns: C) Uniform, D) AI, E) X_Pre, F) X_AI, G) Blend_50, H) Blend_70"
+        "⚠️  [spec-applicator] NAMING WARNING: Missing expected variant patterns: C) Uniform, D) AI, E) X_Pre, F) X_AI, G) Blend_50, H) Blend_70, I) Native Figma, J) Native+Abs, K) Native Smart, L) Native Grid"
       );
     });
   });

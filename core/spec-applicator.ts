@@ -283,6 +283,11 @@ export async function applyLayoutSpec(
           nodeSpec.nodeId = newId;
           specMap.set(newId, nodeSpec);
         }
+        // Also remap originalPositions so converted nodes can be found
+        const pos = originalPositions.get(oldId);
+        if (pos) {
+          originalPositions.set(newId, pos);
+        }
       }
     }
 
@@ -1180,50 +1185,28 @@ function applyAbsolutePositioning(
   console.log("[applyAbsolutePositioning] Built node map with", allNodesMap.size, "nodes");
 
   // ============================================
-  // PASS 1: Collect nodes and compute EXTENSIVE diagnostics
+  // PASS 1: Collect ALL visible direct children for positioning
   // ============================================
-  const absoluteNodes: Array<{ nodeId: string; spec: NodeSpec; node: SceneNode; originalPos: OriginalPosition }> = [];
+  // Iterate over direct children of the root frame (not just spec-marked ABSOLUTE nodes).
+  // This ensures modes A-H produce distinct layouts by positioning all top-level elements.
+  const absoluteNodes: Array<{ nodeId: string; spec: NodeSpec | undefined; node: SceneNode; originalPos: OriginalPosition }> = [];
   let sumOriginalY = 0;
   let sumOriginalHeight = 0;
   let nodeCount = 0;
 
-  for (const [nodeId, spec] of specMap) {
-    if (spec.positioning !== "ABSOLUTE") {
+  for (const child of frame.children) {
+    if (!child.visible) continue;
+    if (isInsideComponentInstance(child)) continue;
+    if (!("layoutPositioning" in child)) continue;
+
+    const originalPos = originalPositions.get(child.id);
+    if (!originalPos) {
+      console.log(`[applyAbsolutePositioning] SKIP ${child.name}: no original position recorded`);
       continue;
     }
 
-    const node = allNodesMap.get(nodeId);
-    if (!node) continue;
-    if (isInsideComponentInstance(node)) continue;
-    if (!("layoutPositioning" in node)) continue;
-
-    // SKIP absolute positioning for items nested inside containers
-    // Only apply to direct children of the root frame
-    if (node.parent && node.parent.id !== frame.id) {
-      console.log(`[applyAbsolutePositioning] SKIP nested node: ${spec.nodeName} (parent: ${node.parent.name})`);
-      console.log(`  Node is inside a container, keeping in auto-layout flow`);
-      continue;
-    }
-
-    // SKIP absolute positioning for CONTAINER frames (frames with auto-layout or children)
-    // Containers should stay in the root's auto-layout flow; only leaf elements get absolute positioning
-    if (node.type === "FRAME") {
-      const frameNode = node as FrameNode;
-      const hasAutoLayout = frameNode.layoutMode !== "NONE";
-      const hasChildren = frameNode.children.length > 0;
-
-      if (hasAutoLayout || hasChildren) {
-        console.log(`[applyAbsolutePositioning] SKIP container frame: ${spec.nodeName}`);
-        console.log(`  Has auto-layout: ${hasAutoLayout}, Has children: ${hasChildren}`);
-        console.log(`  Containers stay in auto-layout flow, only leaf elements get absolute positioning`);
-        continue;
-      }
-    }
-
-    const originalPos = originalPositions.get(nodeId);
-    if (!originalPos) continue;
-
-    absoluteNodes.push({ nodeId, spec, node, originalPos });
+    const spec = specMap.get(child.id); // May be undefined — that's fine
+    absoluteNodes.push({ nodeId: child.id, spec, node: child, originalPos });
 
     // Accumulate for centroid calculation
     sumOriginalY += originalPos.y + originalPos.height / 2; // center Y of each element
@@ -1234,8 +1217,8 @@ function applyAbsolutePositioning(
   console.log("┌─────────────────────────────────────────────────────────────────┐");
   console.log("│ ORIGINAL ELEMENT BOUNDS (before any transformation)            │");
   console.log("└─────────────────────────────────────────────────────────────────┘");
-  for (const { spec, originalPos } of absoluteNodes) {
-    console.log(`[ORIGINAL] ${spec.nodeName}:`);
+  for (const { node, originalPos } of absoluteNodes) {
+    console.log(`[ORIGINAL] ${node.name}:`);
     console.log(`  Position: (${originalPos.x.toFixed(1)}, ${originalPos.y.toFixed(1)})`);
     console.log(`  Size: ${originalPos.width.toFixed(1)} x ${originalPos.height.toFixed(1)}`);
     console.log(`  Bounds: Left=${originalPos.x.toFixed(1)}, Right=${(originalPos.x + originalPos.width).toFixed(1)}`);
@@ -1270,7 +1253,7 @@ function applyAbsolutePositioning(
       const centerDeltaX = bCenterX - aCenterX;
       const centerDeltaY = bCenterY - aCenterY;
 
-      console.log(`[ORIGINAL GAP] ${a.spec.nodeName} <-> ${b.spec.nodeName}:`);
+      console.log(`[ORIGINAL GAP] ${a.node.name} <-> ${b.node.name}:`);
       console.log(`  Horizontal edge gap: ${horizontalGap.toFixed(1)}px ${horizontalGap < 0 ? "(OVERLAP)" : ""}`);
       console.log(`  Vertical edge gap: ${verticalGap.toFixed(1)}px ${verticalGap < 0 ? "(OVERLAP)" : ""}`);
       console.log(`  Center-to-center: ΔX=${centerDeltaX.toFixed(1)}, ΔY=${centerDeltaY.toFixed(1)}`);
@@ -1430,30 +1413,32 @@ function applyAbsolutePositioning(
   const finalPositions: Array<{ name: string; x: number; y: number; width: number; height: number }> = [];
 
   for (const { nodeId, spec, node, originalPos } of absoluteNodes) {
-    console.log(`[TRANSFORM] ${spec.nodeName} (id: ${nodeId}):`);
+    const nodeName = spec?.nodeName ?? node.name;
+    console.log(`[TRANSFORM] ${nodeName} (id: ${nodeId}):`);
 
     // Set to absolute positioning (breaks out of auto-layout flow)
     const targetNode = node as SceneNode & { layoutPositioning: "AUTO" | "ABSOLUTE" };
     targetNode.layoutPositioning = "ABSOLUTE";
 
-    // Get CURRENT dimensions (may have changed during resize)
-    const currentWidth = "width" in node ? (node as { width: number }).width : originalPos.width;
-    const currentHeight = "height" in node ? (node as { height: number }).height : originalPos.height;
+    // Reset dimensions to original (auto-layout FILL may have stretched them)
+    if ("resize" in node && typeof (node as { resize: unknown }).resize === "function") {
+      const resizableNode = node as SceneNode & { resize: (width: number, height: number) => void };
+      resizableNode.resize(originalPos.width, originalPos.height);
+      console.log(`  Reset dimensions to original: ${originalPos.width.toFixed(1)} x ${originalPos.height.toFixed(1)}`);
+    }
 
-    console.log(`  Original dimensions: ${originalPos.width.toFixed(1)} x ${originalPos.height.toFixed(1)}`);
-    console.log(`  Current dimensions:  ${currentWidth.toFixed(1)} x ${currentHeight.toFixed(1)}`);
-
-    let newX: number;
-    let newY: number;
-    let finalWidth = currentWidth;
-    let finalHeight = currentHeight;
+    // Default: center horizontally, scale Y proportionally
+    let newX: number = (frame.width - originalPos.width) / 2;
+    let newY: number = originalPos.y * uniformScale + yOffset;
+    let finalWidth = originalPos.width;
+    let finalHeight = originalPos.height;
 
     // Apply positioning based on mode
     switch (mode) {
       case "PRESERVE_SPACING":
         // KEEP original X positions (preserves horizontal spacing between elements)
         // Just shift horizontally to center the composition in the narrower frame
-        // Scale Y by 0.9x + offset to maintain vertical placement
+        // Scale Y by uniformScale + offset to maintain vertical placement
         newX = originalPos.x + xOffset;
         newY = originalPos.y * uniformScale + yOffset;
         console.log(`  [PRESERVE_SPACING] Original X spacing preserved, centered horizontally`);
@@ -1483,13 +1468,13 @@ function applyAbsolutePositioning(
 
       case "AI_DETERMINED":
         // Use AI-specified coordinates if available, otherwise use center positioning
-        if (spec.x !== undefined && spec.y !== undefined) {
+        if (spec?.x !== undefined && spec?.y !== undefined) {
           newX = spec.x;
           newY = spec.y;
           console.log(`  [AI_DETERMINED] Using AI coordinates: (${spec.x}, ${spec.y})`);
         } else {
           // Fallback: center horizontally, position at original Y percentage
-          newX = (frame.width - currentWidth) / 2;
+          newX = (frame.width - originalPos.width) / 2;
           const yPercentage = originalPos.y / originalHeight;
           newY = yPercentage * frame.height;
           console.log(`  [AI_DETERMINED] No AI coords, centering: (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
@@ -1501,11 +1486,11 @@ function applyAbsolutePositioning(
         const group = nodeToGroup.get(nodeId);
         let strategyUsed: string;
 
-        console.log(`  [HYBRID] Checking strategy for ${spec.nodeName}:`);
+        console.log(`  [HYBRID] Checking strategy for ${nodeName}:`);
         console.log(`    Group: ${group?.groupId ?? "none"}`);
         console.log(`    Role: ${group?.role ?? "ungrouped"}`);
         console.log(`    preserveSpacing: ${group?.preserveSpacing ?? false}`);
-        console.log(`    AI coords available: ${spec.x !== undefined && spec.y !== undefined}`);
+        console.log(`    AI coords available: ${spec?.x !== undefined && spec?.y !== undefined}`);
 
         if (group?.preserveSpacing) {
           // Use PRESERVE_SPACING logic: keep original X, center horizontally, scale Y
@@ -1516,7 +1501,7 @@ function applyAbsolutePositioning(
           console.log(`    Original pos: (${originalPos.x.toFixed(1)}, ${originalPos.y.toFixed(1)})`);
           console.log(`    X: ${originalPos.x.toFixed(1)} + offset ${xOffset.toFixed(1)} = ${newX.toFixed(1)}`);
           console.log(`    Y: ${originalPos.y.toFixed(1)} * ${uniformScale.toFixed(3)} + ${yOffset.toFixed(1)} = ${newY.toFixed(1)}`);
-        } else if (spec.x !== undefined && spec.y !== undefined) {
+        } else if (spec?.x !== undefined && spec?.y !== undefined) {
           // Use AI_DETERMINED logic: AI-specified coordinates
           newX = spec.x;
           newY = spec.y;
@@ -1533,13 +1518,13 @@ function applyAbsolutePositioning(
           console.log(`    Scaled + centered: (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
         }
 
-        console.log(`  [HYBRID] ${spec.nodeName}: ${strategyUsed}`);
+        console.log(`  [HYBRID] ${nodeName}: ${strategyUsed}`);
         break;
 
       case "AD_X_PRESERVE_Y_AI":
         // X from Mode A (preserve spacing + offset), Y from Mode D (AI coords)
         newX = originalPos.x + xOffset;
-        if (spec.y !== undefined) {
+        if (spec?.y !== undefined) {
           newY = spec.y;
           console.log(`  [AD_X_PRESERVE_Y_AI] X: preserve spacing, Y: AI`);
           console.log(`    X: ${originalPos.x.toFixed(1)} + ${xOffset.toFixed(1)} = ${newX.toFixed(1)}`);
@@ -1554,7 +1539,7 @@ function applyAbsolutePositioning(
       case "AD_X_AI_Y_PRESERVE":
         // X from Mode D (AI coords), Y from Mode A (scaled + offset)
         newY = originalPos.y * uniformScale + yOffset;
-        if (spec.x !== undefined) {
+        if (spec?.x !== undefined) {
           newX = spec.x;
           console.log(`  [AD_X_AI_Y_PRESERVE] X: AI, Y: preserve spacing`);
           console.log(`    X: AI specified = ${newX.toFixed(1)}`);
@@ -1570,8 +1555,8 @@ function applyAbsolutePositioning(
         // 50% blend of Mode A and Mode D positions
         const a50X = originalPos.x + xOffset;
         const a50Y = originalPos.y * uniformScale + yOffset;
-        const d50X = spec.x ?? a50X;
-        const d50Y = spec.y ?? a50Y;
+        const d50X = spec?.x ?? a50X;
+        const d50Y = spec?.y ?? a50Y;
         newX = (a50X + d50X) / 2;
         newY = (a50Y + d50Y) / 2;
         console.log(`  [AD_BLEND_50] 50% A + 50% D blend`);
@@ -1584,8 +1569,8 @@ function applyAbsolutePositioning(
         // 70% Mode A + 30% Mode D blend
         const a70X = originalPos.x + xOffset;
         const a70Y = originalPos.y * uniformScale + yOffset;
-        const d30X = spec.x ?? a70X;
-        const d30Y = spec.y ?? a70Y;
+        const d30X = spec?.x ?? a70X;
+        const d30Y = spec?.y ?? a70Y;
         newX = 0.7 * a70X + 0.3 * d30X;
         newY = 0.7 * a70Y + 0.3 * d30Y;
         console.log(`  [AD_BLEND_70_30] 70% A + 30% D blend`);
@@ -1600,7 +1585,7 @@ function applyAbsolutePositioning(
 
     // Store final position for gap analysis
     finalPositions.push({
-      name: spec.nodeName,
+      name: nodeName,
       x: newX,
       y: newY,
       width: finalWidth,
@@ -1689,7 +1674,7 @@ function applyAbsolutePositioning(
       const expectedDeltaX = origCenterDeltaX * uniformScale;
       const expectedDeltaY = origCenterDeltaY * uniformScale;
 
-      console.log(`${a.spec.nodeName} <-> ${b.spec.nodeName}:`);
+      console.log(`${a.node.name} <-> ${b.node.name}:`);
       console.log(`  Original ΔX: ${origCenterDeltaX.toFixed(1)} -> Final: ${finalCenterDeltaX.toFixed(1)} (expected: ${expectedDeltaX.toFixed(1)})`);
       console.log(`  Original ΔY: ${origCenterDeltaY.toFixed(1)} -> Final: ${finalCenterDeltaY.toFixed(1)} (expected: ${expectedDeltaY.toFixed(1)})`);
 
