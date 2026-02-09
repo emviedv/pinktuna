@@ -312,6 +312,8 @@ export async function applyLayoutSpec(
       // This combines wrap/constraints with precise element placement
       applyNativeFigmaLayout(variant, specMap, originalWidth, originalHeight);
       applyAbsolutePositioning(variant, specMap, originalPositions, originalWidth, originalHeight, "HYBRID", variantSpec.semanticGroups ?? []);
+      // Detect and resolve collisions caused by combining native layout with absolute positioning
+      detectAndResolveCollisions(variant, specMap);
     } else if (mode === "NATIVE_SMART") {
       // Smart native mode: intelligent composition with visual hierarchy and rhythm
       applyNativeSmartLayout(variant, specMap, variantSpec.semanticGroups ?? [], originalWidth, originalHeight);
@@ -1705,6 +1707,246 @@ function applyAbsolutePositioning(
 
   console.log("╔══════════════════════════════════════════════════════════════════╗");
   console.log("║ [applyAbsolutePositioning] COMPLETE                              ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+}
+
+/** Bounding rect for collision detection */
+interface CollisionRect {
+  nodeId: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Detect and resolve collisions between absolutely-positioned elements
+ * in the NATIVE_PLUS_ABSOLUTE mode. After combining native Figma layout
+ * with absolute positioning, elements may overlap because the two systems
+ * don't coordinate. This function:
+ *
+ * 1. Collects all absolutely-positioned direct children of the frame
+ * 2. Detects overlapping pairs (bounding-box intersection)
+ * 3. Iteratively nudges overlapping elements apart along the axis of
+ *    least penetration, respecting TikTok safety zones
+ * 4. Logs before/after state for debugging
+ *
+ * @param frame - The variant frame after both native and absolute layout
+ * @param specMap - Node specs (used to identify absolute nodes)
+ */
+function detectAndResolveCollisions(
+  frame: FrameNode,
+  specMap: Map<string, NodeSpec>
+): void {
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [detectAndResolveCollisions] NATIVE+ABS Collision Detection     ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+
+  // TikTok safety bounds for clamping after nudge
+  const EDGE_PADDING = 60;
+  const TOP_SAFE = 154;
+  const BOTTOM_SAFE = 1248;
+  const MIN_GAP = 8; // Minimum gap to enforce between elements after resolution
+
+  // ============================================
+  // STEP 1: Collect absolutely-positioned direct children
+  // ============================================
+  const rects: CollisionRect[] = [];
+
+  for (const child of frame.children) {
+    if (!("layoutPositioning" in child)) continue;
+    const positioned = child as SceneNode & { layoutPositioning: string };
+    if (positioned.layoutPositioning !== "ABSOLUTE") continue;
+
+    rects.push({
+      nodeId: child.id,
+      name: child.name,
+      x: child.x,
+      y: child.y,
+      width: child.width,
+      height: child.height,
+    });
+  }
+
+  console.log(`[detectAndResolveCollisions] Found ${rects.length} absolutely-positioned elements`);
+
+  if (rects.length < 2) {
+    console.log("[detectAndResolveCollisions] Fewer than 2 absolute elements, skipping collision detection");
+    return;
+  }
+
+  // Log initial state
+  for (const r of rects) {
+    console.log(`[COLLISION-PRE] ${r.name}: (${r.x.toFixed(1)}, ${r.y.toFixed(1)}) ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
+  }
+
+  // ============================================
+  // STEP 2: Detect collisions (AABB intersection test)
+  // ============================================
+  function rectsOverlap(a: CollisionRect, b: CollisionRect): boolean {
+    return (
+      a.x < b.x + b.width &&
+      a.x + a.width > b.x &&
+      a.y < b.y + b.height &&
+      a.y + a.height > b.y
+    );
+  }
+
+  /** Calculate overlap depth on each axis. Positive = overlapping. */
+  function overlapDepth(a: CollisionRect, b: CollisionRect): { dx: number; dy: number } {
+    const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+    const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+    return { dx: Math.max(0, overlapX), dy: Math.max(0, overlapY) };
+  }
+
+  // Count initial collisions
+  let initialCollisions = 0;
+  const collisionPairs: Array<{ i: number; j: number }> = [];
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      if (rectsOverlap(rects[i], rects[j])) {
+        const { dx, dy } = overlapDepth(rects[i], rects[j]);
+        console.log(`[COLLISION] ${rects[i].name} <-> ${rects[j].name}: overlap ${dx.toFixed(1)}px H, ${dy.toFixed(1)}px V`);
+        collisionPairs.push({ i, j });
+        initialCollisions++;
+      }
+    }
+  }
+
+  console.log(`[detectAndResolveCollisions] Initial collisions detected: ${initialCollisions}`);
+
+  if (initialCollisions === 0) {
+    console.log("[detectAndResolveCollisions] No collisions found - layout is clean");
+    return;
+  }
+
+  // ============================================
+  // STEP 3: Resolve collisions iteratively
+  // ============================================
+  // Strategy: nudge along the axis of LEAST penetration to minimise visual disruption.
+  // Repeat up to MAX_ITERATIONS in case resolving one pair creates a new overlap.
+  const MAX_ITERATIONS = 10;
+  let iteration = 0;
+  let resolved = false;
+
+  while (!resolved && iteration < MAX_ITERATIONS) {
+    iteration++;
+    resolved = true; // optimistic
+
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        if (!rectsOverlap(rects[i], rects[j])) continue;
+
+        resolved = false; // still have work to do
+        const a = rects[i];
+        const b = rects[j];
+        const { dx, dy } = overlapDepth(a, b);
+
+        // Determine which axis has less penetration and nudge along that axis
+        if (dx <= dy) {
+          // Resolve horizontally - push apart by (dx + MIN_GAP) / 2 each
+          const nudge = (dx + MIN_GAP) / 2;
+          const aCenterX = a.x + a.width / 2;
+          const bCenterX = b.x + b.width / 2;
+
+          if (aCenterX <= bCenterX) {
+            // a is to the left, push a left and b right
+            a.x -= nudge;
+            b.x += nudge;
+          } else {
+            a.x += nudge;
+            b.x -= nudge;
+          }
+          console.log(`[RESOLVE iter=${iteration}] ${a.name} <-> ${b.name}: nudge H ±${nudge.toFixed(1)}px`);
+        } else {
+          // Resolve vertically - push apart by (dy + MIN_GAP) / 2 each
+          const nudge = (dy + MIN_GAP) / 2;
+          const aCenterY = a.y + a.height / 2;
+          const bCenterY = b.y + b.height / 2;
+
+          if (aCenterY <= bCenterY) {
+            // a is above, push a up and b down
+            a.y -= nudge;
+            b.y += nudge;
+          } else {
+            a.y += nudge;
+            b.y -= nudge;
+          }
+          console.log(`[RESOLVE iter=${iteration}] ${a.name} <-> ${b.name}: nudge V ±${nudge.toFixed(1)}px`);
+        }
+      }
+    }
+  }
+
+  if (!resolved) {
+    console.log(`[detectAndResolveCollisions] WARNING: Could not fully resolve all collisions after ${MAX_ITERATIONS} iterations`);
+  } else {
+    console.log(`[detectAndResolveCollisions] All collisions resolved in ${iteration} iteration(s)`);
+  }
+
+  // ============================================
+  // STEP 4: Clamp to TikTok safety zones
+  // ============================================
+  console.log("[detectAndResolveCollisions] STEP 4: Clamping to TikTok safety zones");
+
+  for (const r of rects) {
+    const originalX = r.x;
+    const originalY = r.y;
+
+    // Horizontal clamping: keep within edge padding
+    if (r.x < EDGE_PADDING) {
+      r.x = EDGE_PADDING;
+    } else if (r.x + r.width > frame.width - EDGE_PADDING) {
+      r.x = frame.width - EDGE_PADDING - r.width;
+    }
+
+    // Vertical clamping: keep within TikTok safe zone
+    if (r.y < TOP_SAFE) {
+      r.y = TOP_SAFE;
+    } else if (r.y + r.height > BOTTOM_SAFE) {
+      r.y = BOTTOM_SAFE - r.height;
+    }
+
+    if (r.x !== originalX || r.y !== originalY) {
+      console.log(`[CLAMP] ${r.name}: (${originalX.toFixed(1)}, ${originalY.toFixed(1)}) -> (${r.x.toFixed(1)}, ${r.y.toFixed(1)})`);
+    }
+  }
+
+  // ============================================
+  // STEP 5: Apply resolved positions back to Figma nodes
+  // ============================================
+  const nodeMap = buildNodeMap(frame);
+
+  for (const r of rects) {
+    const node = nodeMap.get(r.nodeId);
+    if (!node) continue;
+
+    node.x = r.x;
+    node.y = r.y;
+  }
+
+  // ============================================
+  // STEP 6: Log final state and verify
+  // ============================================
+  let remainingCollisions = 0;
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      if (rectsOverlap(rects[i], rects[j])) {
+        const { dx, dy } = overlapDepth(rects[i], rects[j]);
+        console.log(`[COLLISION-REMAINING] ${rects[i].name} <-> ${rects[j].name}: ${dx.toFixed(1)}px H, ${dy.toFixed(1)}px V`);
+        remainingCollisions++;
+      }
+    }
+  }
+
+  for (const r of rects) {
+    console.log(`[COLLISION-POST] ${r.name}: (${r.x.toFixed(1)}, ${r.y.toFixed(1)}) ${r.width.toFixed(1)}x${r.height.toFixed(1)}`);
+  }
+
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log(`║ [detectAndResolveCollisions] COMPLETE                            ║`);
+  console.log(`║ Initial collisions: ${String(initialCollisions).padEnd(3)} | Remaining: ${String(remainingCollisions).padEnd(3)} | Iterations: ${String(iteration).padEnd(2)} ║`);
   console.log("╚══════════════════════════════════════════════════════════════════╝");
 }
 
