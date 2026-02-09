@@ -283,6 +283,13 @@ export async function applyLayoutSpec(
           nodeSpec.nodeId = newId;
           specMap.set(newId, nodeSpec);
         }
+        // Propagate ID changes into originalPositions so converted
+        // groups (GROUP→FRAME) can still look up their pre-resize positions
+        const origPos = originalPositions.get(oldId);
+        if (origPos) {
+          originalPositions.set(newId, origPos);
+          console.log(`[spec-applicator] Propagated originalPosition: ${oldId} → ${newId}`);
+        }
       }
     }
 
@@ -1175,6 +1182,31 @@ function applyAbsolutePositioning(
     console.log("[applyAbsolutePositioning] Groups with preserveSpacing:", preserveSpacingGroups.length > 0 ? preserveSpacingGroups.join(", ") : "none");
   }
 
+  /**
+   * Resolve the semantic group for a node. If the node itself isn't in a group
+   * (e.g. it's a container frame created by convertToAutoLayout), check whether
+   * any of its direct children belong to a group and inherit that group.
+   */
+  function resolveGroup(nodeId: string, node: SceneNode): SemanticGroup | undefined {
+    const direct = nodeToGroup.get(nodeId);
+    if (direct) return direct;
+
+    // For container frames, check if children map to a single group
+    if ("children" in node) {
+      const childGroups = new Set<SemanticGroup>();
+      for (const child of (node as FrameNode).children) {
+        const childGroup = nodeToGroup.get(child.id);
+        if (childGroup) childGroups.add(childGroup);
+      }
+      if (childGroups.size === 1) {
+        const inherited = Array.from(childGroups)[0];
+        console.log(`[applyAbsolutePositioning] Inherited group "${inherited.groupId}" from children for container: ${node.name}`);
+        return inherited;
+      }
+    }
+    return undefined;
+  }
+
   // Build complete node map for the entire tree
   const allNodesMap = buildNodeMap(frame);
   console.log("[applyAbsolutePositioning] Built node map with", allNodesMap.size, "nodes");
@@ -1187,49 +1219,78 @@ function applyAbsolutePositioning(
   let sumOriginalHeight = 0;
   let nodeCount = 0;
 
-  for (const [nodeId, spec] of specMap) {
-    if (spec.positioning !== "ABSOLUTE") {
-      continue;
-    }
+  // For HYBRID and AI_DETERMINED modes, reposition ALL direct children of the
+  // root frame — these modes are designed to control the full composition layout.
+  // Other modes only reposition nodes explicitly marked positioning: "ABSOLUTE".
+  const repositionAllDirectChildren = mode === "HYBRID" || mode === "AI_DETERMINED";
 
-    const node = allNodesMap.get(nodeId);
-    if (!node) continue;
-    if (isInsideComponentInstance(node)) continue;
-    if (!("layoutPositioning" in node)) continue;
+  if (repositionAllDirectChildren) {
+    console.log(`[applyAbsolutePositioning] Mode ${mode}: collecting ALL direct children for repositioning`);
 
-    // SKIP absolute positioning for items nested inside containers
-    // Only apply to direct children of the root frame
-    if (node.parent && node.parent.id !== frame.id) {
-      console.log(`[applyAbsolutePositioning] SKIP nested node: ${spec.nodeName} (parent: ${node.parent.name})`);
-      console.log(`  Node is inside a container, keeping in auto-layout flow`);
-      continue;
-    }
+    for (const child of frame.children) {
+      const childId = child.id;
+      if (isInsideComponentInstance(child)) continue;
+      if (!("layoutPositioning" in child)) continue;
 
-    // SKIP absolute positioning for CONTAINER frames (frames with auto-layout or children)
-    // Containers should stay in the root's auto-layout flow; only leaf elements get absolute positioning
-    if (node.type === "FRAME") {
-      const frameNode = node as FrameNode;
-      const hasAutoLayout = frameNode.layoutMode !== "NONE";
-      const hasChildren = frameNode.children.length > 0;
+      // Look up spec by child ID, or synthesize a minimal one for unspecified children
+      let spec = specMap.get(childId);
+      if (!spec) {
+        // Build a synthetic spec so the positioning logic can still run.
+        // Try to find a spec by matching nodeIds in semantic groups.
+        spec = {
+          nodeId: childId,
+          nodeName: child.name,
+          visible: child.visible,
+          order: 999,
+          widthSizing: "FIXED" as const,
+          heightSizing: "FIXED" as const,
+        };
+        console.log(`[applyAbsolutePositioning] Synthesized spec for direct child: ${child.name} (${childId})`);
+      }
 
-      if (hasAutoLayout || hasChildren) {
-        console.log(`[applyAbsolutePositioning] SKIP container frame: ${spec.nodeName}`);
-        console.log(`  Has auto-layout: ${hasAutoLayout}, Has children: ${hasChildren}`);
-        console.log(`  Containers stay in auto-layout flow, only leaf elements get absolute positioning`);
+      const originalPos = originalPositions.get(childId);
+      if (!originalPos) {
+        console.log(`[applyAbsolutePositioning] SKIP direct child (no original position): ${child.name} (${childId})`);
         continue;
       }
+
+      absoluteNodes.push({ nodeId: childId, spec, node: child, originalPos });
+      sumOriginalY += originalPos.y + originalPos.height / 2;
+      sumOriginalHeight += originalPos.height;
+      nodeCount++;
+      console.log(`[applyAbsolutePositioning] Collected direct child: ${child.name} (${childId})`);
     }
+  } else {
+    // Original behavior for other modes: only process nodes with positioning: "ABSOLUTE"
+    for (const [nodeId, spec] of specMap) {
+      if (spec.positioning !== "ABSOLUTE") {
+        continue;
+      }
 
-    const originalPos = originalPositions.get(nodeId);
-    if (!originalPos) continue;
+      const node = allNodesMap.get(nodeId);
+      if (!node) continue;
+      if (isInsideComponentInstance(node)) continue;
+      if (!("layoutPositioning" in node)) continue;
 
-    absoluteNodes.push({ nodeId, spec, node, originalPos });
+      // SKIP absolute positioning for items nested inside containers
+      // Only apply to direct children of the root frame
+      if (node.parent && node.parent.id !== frame.id) {
+        console.log(`[applyAbsolutePositioning] SKIP nested node: ${spec.nodeName} (parent: ${node.parent.name})`);
+        console.log(`  Node is inside a container, keeping in auto-layout flow`);
+        continue;
+      }
 
-    // Accumulate for centroid calculation
-    sumOriginalY += originalPos.y + originalPos.height / 2; // center Y of each element
-    sumOriginalHeight += originalPos.height;
-    nodeCount++;
+      const originalPos = originalPositions.get(nodeId);
+      if (!originalPos) continue;
+
+      absoluteNodes.push({ nodeId, spec, node, originalPos });
+      sumOriginalY += originalPos.y + originalPos.height / 2;
+      sumOriginalHeight += originalPos.height;
+      nodeCount++;
+    }
   }
+
+  console.log(`[applyAbsolutePositioning] Collected ${absoluteNodes.length} nodes for repositioning (mode: ${mode})`);
 
   console.log("┌─────────────────────────────────────────────────────────────────┐");
   console.log("│ ORIGINAL ELEMENT BOUNDS (before any transformation)            │");
@@ -1487,8 +1548,31 @@ function applyAbsolutePositioning(
           newX = spec.x;
           newY = spec.y;
           console.log(`  [AI_DETERMINED] Using AI coordinates: (${spec.x}, ${spec.y})`);
+        } else if ("children" in node) {
+          // Container node without direct AI coords — derive position from
+          // AI coordinates of child specs (centroid of children's AI positions)
+          let aiXSum = 0, aiYSum = 0, aiCount = 0;
+          for (const child of (node as FrameNode).children) {
+            const childSpec = specMap.get(child.id);
+            if (childSpec?.x !== undefined && childSpec?.y !== undefined) {
+              aiXSum += childSpec.x;
+              aiYSum += childSpec.y;
+              aiCount++;
+            }
+          }
+          if (aiCount > 0) {
+            newX = aiXSum / aiCount;
+            newY = aiYSum / aiCount;
+            console.log(`  [AI_DETERMINED] Derived from ${aiCount} child AI coords: (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
+          } else {
+            // No child AI coords either — center horizontally, scale Y
+            newX = (frame.width - currentWidth) / 2;
+            const yPercentage = originalPos.y / originalHeight;
+            newY = yPercentage * frame.height;
+            console.log(`  [AI_DETERMINED] No AI coords (self or children), centering: (${newX.toFixed(1)}, ${newY.toFixed(1)})`);
+          }
         } else {
-          // Fallback: center horizontally, position at original Y percentage
+          // Leaf node, no AI coords — center horizontally, position at original Y percentage
           newX = (frame.width - currentWidth) / 2;
           const yPercentage = originalPos.y / originalHeight;
           newY = yPercentage * frame.height;
@@ -1498,7 +1582,7 @@ function applyAbsolutePositioning(
 
       case "HYBRID":
         // Per-element strategy based on semantic group's preserveSpacing flag
-        const group = nodeToGroup.get(nodeId);
+        const group = resolveGroup(nodeId, node);
         let strategyUsed: string;
 
         console.log(`  [HYBRID] Checking strategy for ${spec.nodeName}:`);
