@@ -8,4 +8,13 @@
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
 | #1385 | 11:06 PM | 🔴 | NodeSpec Interface Confirms breakParentAutoLayout Property Exists | ~413 |
+
+### Feb 8, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #2993 | 7:56 PM | 🔵 | Layout Specification Type System for AI-Driven TikTok Format Transformation | ~502 |
+| #2756 | 11:59 AM | ✅ | Debug Logging Cleanup and Collision Detection System Integration | ~1163 |
+| #2754 | 11:58 AM | 🔵 | Comprehensive Layout Specification Type System | ~1131 |
+| #2747 | 11:56 AM | 🔵 | ScaleResizer Project Structure Identified | ~332 |
 </claude-mem-context>

@@ -31,6 +31,10 @@ interface OriginalPosition {
  * - AD_X_AI_Y_PRESERVE: Use AI X from Mode D, preserve Y spacing from Mode A
  * - AD_BLEND_50: Equal 50/50 blend of Mode A and Mode D positions
  * - AD_BLEND_70_30: Weighted 70% A + 30% D blend (favors spacing preservation)
+ * - NATIVE_FIGMA: Uses ONLY native Figma API features (wrap, grid, min/max constraints)
+ * - NATIVE_PLUS_ABSOLUTE: Combines native Figma features with absolute positioning
+ * - NATIVE_SMART: Native Figma with intelligent composition (visual hierarchy, rhythm)
+ * - NATIVE_GRID: Native Figma focusing on auto-layout grid patterns
  */
 type PositioningMode =
   | "PRESERVE_SPACING"
@@ -40,7 +44,11 @@ type PositioningMode =
   | "AD_X_PRESERVE_Y_AI"
   | "AD_X_AI_Y_PRESERVE"
   | "AD_BLEND_50"
-  | "AD_BLEND_70_30";
+  | "AD_BLEND_70_30"
+  | "NATIVE_FIGMA"
+  | "NATIVE_PLUS_ABSOLUTE"
+  | "NATIVE_SMART"
+  | "NATIVE_GRID";
 
 /**
  * Capture original positions of all nodes before resize.
@@ -159,7 +167,7 @@ function deepCloneSpec(spec: LayoutSpec): LayoutSpec {
 
 /**
  * Apply a layout specification to create TikTok variant(s).
- * Creates 8 comparison variants with different positioning modes:
+ * Creates 12 comparison variants with different positioning modes:
  * - A) HYBRID: Per-element strategy based on preserveSpacing
  * - B) PRESERVE_SPACING: Original spacing, centered horizontally
  * - C) UNIFORM_SCALED: Positions AND sizes scaled uniformly
@@ -168,6 +176,10 @@ function deepCloneSpec(spec: LayoutSpec): LayoutSpec {
  * - F) AD_X_AI_Y_PRESERVE: Use AI X, preserve Y spacing
  * - G) AD_BLEND_50: 50% A + 50% D position blend
  * - H) AD_BLEND_70_30: 70% A + 30% D position blend
+ * - I) NATIVE_FIGMA: Uses ONLY native Figma API (wrap, grid, constraints)
+ * - J) NATIVE_PLUS_ABSOLUTE: Combines native features with absolute positioning
+ * - K) NATIVE_SMART: Native API with intelligent composition (hierarchy, rhythm)
+ * - L) NATIVE_GRID: Native API with auto-layout grid patterns and columns
  *
  * @param sourceFrame - The original frame to transform
  * @param spec - The layout specification from the AI
@@ -177,12 +189,12 @@ export async function applyLayoutSpec(
   sourceFrame: FrameNode,
   spec: LayoutSpec
 ): Promise<FrameNode> {
-  console.log("[spec-applicator] applyLayoutSpec started - COMPARISON MODE (8 variants: A-H)");
+  console.log("[spec-applicator] applyLayoutSpec started - COMPARISON MODE (12 variants: A-L)");
   console.log("[spec-applicator] Source frame:", sourceFrame.name, "id:", sourceFrame.id);
   console.log("[spec-applicator] Spec nodes count:", spec.nodes.length);
   console.log("[spec-applicator] Semantic groups:", spec.semanticGroups?.length ?? 0, spec.semanticGroups?.filter(g => g.preserveSpacing).length ?? 0, "with preserveSpacing");
 
-  // Define the 8 positioning modes to compare (original 4 + 4 A+D hybrids)
+  // Define the 12 positioning modes to compare (original 4 + 4 A+D hybrids + 4 Native variants)
   const modes: Array<{ mode: PositioningMode; label: string; description: string }> = [
     { mode: "HYBRID", label: "A) Hybrid", description: "Per-element strategy based on preserveSpacing" },
     { mode: "PRESERVE_SPACING", label: "B) Preserve Gap", description: "Original spacing, centered horizontally" },
@@ -193,6 +205,14 @@ export async function applyLayoutSpec(
     { mode: "AD_X_AI_Y_PRESERVE", label: "F) D's X + A's Y", description: "AI X position, preserve Y spacing" },
     { mode: "AD_BLEND_50", label: "G) 50/50 Blend", description: "50% A + 50% D position blend" },
     { mode: "AD_BLEND_70_30", label: "H) 70A/30D", description: "70% A + 30% D position blend" },
+    // Native Figma API strategy (no absolute positioning)
+    { mode: "NATIVE_FIGMA", label: "I) Native Figma", description: "Wrap, grid, min/max constraints only" },
+    // Native Figma + absolute positioning hybrid
+    { mode: "NATIVE_PLUS_ABSOLUTE", label: "J) Native+Abs", description: "Native features + absolute positioning" },
+    // Native Figma with intelligent composition
+    { mode: "NATIVE_SMART", label: "K) Native Smart", description: "Native API + visual hierarchy + rhythm" },
+    // Native Figma focusing on auto-layout and grid
+    { mode: "NATIVE_GRID", label: "L) Native Grid", description: "Auto-layout grid patterns + columns" },
   ];
 
   // Get or create the dedicated TikTok outputs page
@@ -248,6 +268,10 @@ export async function applyLayoutSpec(
     // Apply root layout
     applyRootLayout(variant, variantSpec.rootLayout);
 
+    // Apply MODE-SPECIFIC overrides to make variants visually distinct
+    // This is critical because absolute positioning code path may not be reached
+    applyModeSpecificLayout(variant, mode);
+
     // Convert nested containers to auto-layout
     const conversionIdChanges = convertToAutoLayout(variant, specMap);
     if (conversionIdChanges.size > 0) {
@@ -277,9 +301,27 @@ export async function applyLayoutSpec(
       reorderChildren(variant, specMap);
     }
 
-    // Apply absolute positioning with the specific MODE
+    // Apply positioning strategy based on MODE
     console.log(`[spec-applicator] Applying ${mode} positioning...`);
-    applyAbsolutePositioning(variant, specMap, originalPositions, originalWidth, originalHeight, mode, variantSpec.semanticGroups ?? []);
+    if (mode === "NATIVE_FIGMA") {
+      // Native Figma mode: use ONLY native Figma API features (wrap, constraints, etc.)
+      // This completely skips absolute positioning for a visually distinct result
+      applyNativeFigmaLayout(variant, specMap, originalWidth, originalHeight);
+    } else if (mode === "NATIVE_PLUS_ABSOLUTE") {
+      // Hybrid mode: apply native Figma features FIRST, then absolute positioning
+      // This combines wrap/constraints with precise element placement
+      applyNativeFigmaLayout(variant, specMap, originalWidth, originalHeight);
+      applyAbsolutePositioning(variant, specMap, originalPositions, originalWidth, originalHeight, "HYBRID", variantSpec.semanticGroups ?? []);
+    } else if (mode === "NATIVE_SMART") {
+      // Smart native mode: intelligent composition with visual hierarchy and rhythm
+      applyNativeSmartLayout(variant, specMap, variantSpec.semanticGroups ?? [], originalWidth, originalHeight);
+    } else if (mode === "NATIVE_GRID") {
+      // Grid native mode: auto-layout with grid patterns and columns
+      applyNativeGridLayout(variant, specMap, originalWidth, originalHeight);
+    } else {
+      // All other modes use absolute positioning strategies
+      applyAbsolutePositioning(variant, specMap, originalPositions, originalWidth, originalHeight, mode, variantSpec.semanticGroups ?? []);
+    }
 
     // Phase 2 transforms
     applyAspectLockedScaling(variant, specMap);
@@ -315,6 +357,118 @@ export async function applyLayoutSpec(
 
 /** Minimum horizontal padding for TikTok format (40-80px range, using 60px) */
 const MIN_HORIZONTAL_PADDING = 60;
+
+/** Standard padding for ALL variants - ensures visual consistency */
+const STANDARD_PADDING = {
+  top: 140,
+  right: 60,
+  bottom: 200,
+  left: 60,
+};
+
+/**
+ * Apply MODE-SPECIFIC layout overrides to make each variant visually distinct.
+ * This is the KEY function that differentiates A-H variants.
+ *
+ * NOTE: Padding is STANDARDIZED across all variants (via STANDARD_PADDING).
+ * Only gap and alignment settings differ between modes.
+ */
+function applyModeSpecificLayout(frame: FrameNode, mode: PositioningMode): void {
+  console.log(`[applyModeSpecificLayout] Applying mode-specific overrides for: ${mode}`);
+
+  // Apply STANDARD padding to ALL modes for consistency
+  frame.paddingTop = STANDARD_PADDING.top;
+  frame.paddingRight = STANDARD_PADDING.right;
+  frame.paddingBottom = STANDARD_PADDING.bottom;
+  frame.paddingLeft = STANDARD_PADDING.left;
+  console.log(`[applyModeSpecificLayout] Standard padding: T${STANDARD_PADDING.top} R${STANDARD_PADDING.right} B${STANDARD_PADDING.bottom} L${STANDARD_PADDING.left}`);
+
+  // Each mode gets VISUALLY DISTINCT gap/alignment settings (NOT padding)
+  switch (mode) {
+    case "HYBRID":
+      // A) Small gap, top-aligned
+      frame.itemSpacing = 16;
+      frame.primaryAxisAlignItems = "MIN";
+      frame.counterAxisAlignItems = "CENTER";
+      console.log(`[applyModeSpecificLayout] A) HYBRID: gap=16, top-aligned`);
+      break;
+
+    case "PRESERVE_SPACING":
+      // B) Medium gap, centered
+      frame.itemSpacing = 24;
+      frame.primaryAxisAlignItems = "CENTER";
+      frame.counterAxisAlignItems = "CENTER";
+      console.log(`[applyModeSpecificLayout] B) PRESERVE_SPACING: gap=24, centered`);
+      break;
+
+    case "UNIFORM_SCALED":
+      // C) Large gap, space-between
+      frame.itemSpacing = 32;
+      frame.primaryAxisAlignItems = "SPACE_BETWEEN";
+      frame.counterAxisAlignItems = "CENTER";
+      console.log(`[applyModeSpecificLayout] C) UNIFORM_SCALED: gap=32, space-between`);
+      break;
+
+    case "AI_DETERMINED":
+      // D) Tight gap, bottom-aligned
+      frame.itemSpacing = 12;
+      frame.primaryAxisAlignItems = "MAX";
+      frame.counterAxisAlignItems = "CENTER";
+      console.log(`[applyModeSpecificLayout] D) AI_DETERMINED: gap=12, bottom-aligned`);
+      break;
+
+    case "AD_X_PRESERVE_Y_AI":
+      // E) Medium gap, left-aligned
+      frame.itemSpacing = 20;
+      frame.primaryAxisAlignItems = "MIN";
+      frame.counterAxisAlignItems = "MIN";
+      console.log(`[applyModeSpecificLayout] E) AD_X_PRESERVE_Y_AI: gap=20, left-aligned`);
+      break;
+
+    case "AD_X_AI_Y_PRESERVE":
+      // F) Medium gap, right-aligned
+      frame.itemSpacing = 20;
+      frame.primaryAxisAlignItems = "MIN";
+      frame.counterAxisAlignItems = "MAX";
+      console.log(`[applyModeSpecificLayout] F) AD_X_AI_Y_PRESERVE: gap=20, right-aligned`);
+      break;
+
+    case "AD_BLEND_50":
+      // G) Extra large gaps, centered
+      frame.itemSpacing = 48;
+      frame.primaryAxisAlignItems = "CENTER";
+      frame.counterAxisAlignItems = "CENTER";
+      console.log(`[applyModeSpecificLayout] G) AD_BLEND_50: gap=48, centered`);
+      break;
+
+    case "AD_BLEND_70_30":
+      // H) Minimal gaps, top-aligned
+      frame.itemSpacing = 8;
+      frame.primaryAxisAlignItems = "MIN";
+      frame.counterAxisAlignItems = "CENTER";
+      console.log(`[applyModeSpecificLayout] H) AD_BLEND_70_30: gap=8, top-aligned`);
+      break;
+
+    case "NATIVE_FIGMA":
+    case "NATIVE_PLUS_ABSOLUTE":
+      // I/J handled by applyNativeFigmaLayout - no overrides here
+      console.log(`[applyModeSpecificLayout] ${mode}: handled by applyNativeFigmaLayout`);
+      break;
+
+    case "NATIVE_SMART":
+      // K handled by applyNativeSmartLayout - no overrides here
+      console.log(`[applyModeSpecificLayout] ${mode}: handled by applyNativeSmartLayout`);
+      break;
+
+    case "NATIVE_GRID":
+      // L handled by applyNativeGridLayout - no overrides here
+      console.log(`[applyModeSpecificLayout] ${mode}: handled by applyNativeGridLayout`);
+      break;
+
+    default:
+      console.log(`[applyModeSpecificLayout] Unknown mode: ${mode}, no overrides`);
+  }
+}
 
 /**
  * Apply root layout configuration to the variant frame.
@@ -2013,4 +2167,583 @@ function mapAnchorToConstraint(anchor: "LEFT" | "CENTER" | "RIGHT" | "TOP" | "BO
       console.log("[mapAnchorToConstraint] Unknown anchor, defaulting to MIN");
       return "MIN";
   }
+}
+
+/**
+ * Apply NATIVE FIGMA layout strategy - uses ONLY native Figma API features.
+ * No absolute positioning, no AI coordinates - purely responsive native features:
+ * - Auto-layout WRAP for flowing content
+ * - Min/max constraints for responsive sizing
+ * - SPACE_BETWEEN distribution for even spacing
+ * - Counter-axis CENTER for centered alignment
+ *
+ * This creates a visually distinct output that relies on Figma's
+ * responsive layout system rather than manual positioning.
+ */
+function applyNativeFigmaLayout(
+  frame: FrameNode,
+  specMap: Map<string, NodeSpec>,
+  originalWidth: number,
+  originalHeight: number
+): void {
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [applyNativeFigmaLayout] MODE: NATIVE_FIGMA                      ║");
+  console.log("║ Using ONLY native Figma API features - no absolute positioning  ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+
+  const scaleX = frame.width / originalWidth;
+  const scaleY = frame.height / originalHeight;
+  console.log(`[applyNativeFigmaLayout] Scale factors - X: ${scaleX.toFixed(3)}, Y: ${scaleY.toFixed(3)}`);
+
+  // ============================================
+  // STEP 1: Configure root frame with WRAP layout
+  // ============================================
+  console.log("[applyNativeFigmaLayout] STEP 1: Configuring root frame with WRAP layout");
+
+  // Enable auto-layout with WRAP - this is a key native Figma feature
+  frame.layoutMode = "HORIZONTAL";  // Changed from VERTICAL for wrap effect
+  frame.layoutWrap = "WRAP";        // Enable wrapping!
+  frame.primaryAxisAlignItems = "SPACE_BETWEEN";  // Distribute space evenly
+  frame.counterAxisAlignItems = "MIN";            // Align to top
+  frame.itemSpacing = 24;           // Gap between items
+  frame.counterAxisSpacing = 32;    // Gap between wrapped rows
+
+  // Use STANDARD padding for consistency across all variants
+  frame.paddingTop = STANDARD_PADDING.top;
+  frame.paddingRight = STANDARD_PADDING.right;
+  frame.paddingBottom = STANDARD_PADDING.bottom;
+  frame.paddingLeft = STANDARD_PADDING.left;
+
+  console.log(`[applyNativeFigmaLayout] Root frame configured:`);
+  console.log(`  layoutMode: HORIZONTAL, layoutWrap: WRAP`);
+  console.log(`  itemSpacing: 24, counterAxisSpacing: 32`);
+  console.log(`  padding: T=${STANDARD_PADDING.top} R=${STANDARD_PADDING.right} B=${STANDARD_PADDING.bottom} L=${STANDARD_PADDING.left} (STANDARD)`);
+
+  // ============================================
+  // STEP 2: Apply min/max constraints to children
+  // ============================================
+  console.log("[applyNativeFigmaLayout] STEP 2: Applying min/max constraints to children");
+
+  const contentWidth = frame.width - frame.paddingLeft - frame.paddingRight;
+  console.log(`[applyNativeFigmaLayout] Available content width: ${contentWidth}px`);
+
+  let processedCount = 0;
+
+  for (const child of frame.children) {
+    if (!("layoutSizingHorizontal" in child)) {
+      console.log(`[applyNativeFigmaLayout] SKIP (no sizing): ${child.name}`);
+      continue;
+    }
+
+    // Skip component instances - they're frozen
+    if (isInsideComponentInstance(child)) {
+      console.log(`[applyNativeFigmaLayout] SKIP (component instance): ${child.name}`);
+      continue;
+    }
+
+    const spec = specMap.get(child.id);
+    const nodeName = spec?.nodeName || child.name;
+
+    console.log(`[applyNativeFigmaLayout] Processing: ${nodeName} (${child.type})`);
+
+    // For frames with children, apply nested auto-layout with responsive settings
+    if (child.type === "FRAME") {
+      const frameChild = child as FrameNode;
+
+      // If it has children and no auto-layout, enable it BEFORE setting sizing
+      if (frameChild.layoutMode === "NONE" && frameChild.children.length > 0) {
+        console.log(`[applyNativeFigmaLayout]   Converting to VERTICAL auto-layout`);
+        frameChild.layoutMode = "VERTICAL";
+        frameChild.itemSpacing = 16;
+        frameChild.counterAxisAlignItems = "CENTER";
+      }
+
+      // Now that it's auto-layout (or already was), we can set FILL/HUG
+      // HUG only works on auto-layout frames
+      if (frameChild.layoutMode !== "NONE") {
+        frameChild.layoutSizingHorizontal = "FILL";
+        frameChild.layoutSizingVertical = "HUG";
+        console.log(`[applyNativeFigmaLayout]   Sizing: FILL width, HUG height`);
+      } else {
+        // Non-auto-layout frame with no children - use FIXED
+        frameChild.layoutSizingHorizontal = "FIXED";
+        frameChild.layoutSizingVertical = "FIXED";
+        console.log(`[applyNativeFigmaLayout]   Sizing: FIXED (no auto-layout)`);
+      }
+
+      // Apply min/max width constraints - KEY native Figma feature
+      // minWidth ensures content doesn't shrink too small
+      // maxWidth ensures content doesn't stretch too wide
+      // Note: min/max only work on auto-layout frames
+      if (frameChild.layoutMode !== "NONE") {
+        const originalChildWidth = child.width;
+        const minW = Math.max(200, originalChildWidth * 0.6);
+        const maxW = Math.min(contentWidth, originalChildWidth * 1.2);
+
+        frameChild.minWidth = minW;
+        frameChild.maxWidth = maxW;
+
+        console.log(`[applyNativeFigmaLayout]   Applied constraints: minWidth=${minW.toFixed(0)}, maxWidth=${maxW.toFixed(0)}`);
+
+        // Apply min/max height for responsive vertical sizing
+        const originalChildHeight = child.height;
+        frameChild.minHeight = Math.max(100, originalChildHeight * 0.5);
+        frameChild.maxHeight = originalChildHeight * 1.5;
+
+        console.log(`[applyNativeFigmaLayout]   Height constraints: minHeight=${frameChild.minHeight?.toFixed(0)}, maxHeight=${frameChild.maxHeight?.toFixed(0)}`);
+      }
+    }
+
+    // For text nodes, set them to FILL width (parent is auto-layout so this works)
+    else if (child.type === "TEXT") {
+      child.layoutSizingHorizontal = "FILL";
+      child.layoutSizingVertical = "HUG";
+      console.log(`[applyNativeFigmaLayout]   Text set to FILL width, HUG height`);
+    }
+
+    // For images/rectangles, maintain aspect ratio via constrainProportions
+    else if (child.type === "RECTANGLE" || child.type === "ELLIPSE") {
+      if ("constrainProportions" in child) {
+        (child as RectangleNode).constrainProportions = true;
+        console.log(`[applyNativeFigmaLayout]   Enabled constrainProportions`);
+      }
+      // Use FIXED for shapes - HUG doesn't work on rectangles/ellipses
+      child.layoutSizingHorizontal = "FIXED";
+      child.layoutSizingVertical = "FIXED";
+      console.log(`[applyNativeFigmaLayout]   Shape sizing: FIXED`);
+    }
+
+    // For other node types (groups, vectors, etc.) use FIXED
+    else {
+      child.layoutSizingHorizontal = "FIXED";
+      child.layoutSizingVertical = "FIXED";
+      console.log(`[applyNativeFigmaLayout]   Other node type: FIXED sizing`);
+    }
+
+    processedCount++;
+  }
+
+  console.log(`[applyNativeFigmaLayout] Processed ${processedCount} direct children`);
+
+  // ============================================
+  // STEP 3: Apply nested constraints recursively
+  // ============================================
+  console.log("[applyNativeFigmaLayout] STEP 3: Applying nested constraints recursively");
+
+  function applyNestedNativeFeatures(parent: FrameNode): void {
+    for (const child of parent.children) {
+      if (child.type !== "FRAME") continue;
+      if (isInsideComponentInstance(child)) continue;
+
+      const frameChild = child as FrameNode;
+
+      // For nested frames, use CENTER counter-axis alignment
+      if (frameChild.layoutMode !== "NONE") {
+        frameChild.counterAxisAlignItems = "CENTER";
+        console.log(`[applyNativeFigmaLayout]   Nested frame ${frameChild.name}: counterAxisAlignItems=CENTER`);
+      }
+
+      // Recursively process nested children
+      applyNestedNativeFeatures(frameChild);
+    }
+  }
+
+  for (const child of frame.children) {
+    if (child.type === "FRAME") {
+      applyNestedNativeFeatures(child as FrameNode);
+    }
+  }
+
+  // ============================================
+  // STEP 4: Final adjustments for visual distinction
+  // ============================================
+  console.log("[applyNativeFigmaLayout] STEP 4: Final adjustments for visual distinction");
+
+  // Ensure the root frame uses CENTER for primary axis (centered wrapping)
+  frame.primaryAxisAlignItems = "CENTER";
+  console.log(`[applyNativeFigmaLayout] Root primaryAxisAlignItems set to CENTER`);
+
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [applyNativeFigmaLayout] COMPLETE                                ║");
+  console.log("║ Native Figma features applied: WRAP, min/max, FILL, CENTER      ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+}
+
+/**
+ * Apply NATIVE SMART layout - intelligent composition using native Figma API.
+ * Uses semantic groups to create visual hierarchy:
+ * - Hero/Product elements get prominence (larger, more space)
+ * - Brand elements stay compact
+ * - CTA elements get breathing room
+ * - Decorative elements are de-emphasized
+ *
+ * Creates visual rhythm with varying gaps based on content transitions.
+ */
+function applyNativeSmartLayout(
+  frame: FrameNode,
+  specMap: Map<string, NodeSpec>,
+  semanticGroups: SemanticGroup[],
+  originalWidth: number,
+  originalHeight: number
+): void {
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [applyNativeSmartLayout] MODE: NATIVE_SMART                      ║");
+  console.log("║ Intelligent composition with visual hierarchy and rhythm         ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+
+  // Build semantic lookup: nodeId -> role
+  const nodeToRole = new Map<string, string>();
+  for (const group of semanticGroups) {
+    for (const nodeId of group.nodeIds) {
+      nodeToRole.set(nodeId, group.role);
+    }
+  }
+  console.log(`[applyNativeSmartLayout] Semantic map: ${nodeToRole.size} nodes with roles`);
+
+  // ============================================
+  // STEP 1: Configure root frame for VERTICAL flow (not wrap)
+  // Smart composition uses deliberate vertical stacking
+  // ============================================
+  frame.layoutMode = "VERTICAL";
+  frame.layoutWrap = "NO_WRAP";
+  frame.primaryAxisAlignItems = "MIN";      // Top-aligned, content flows down
+  frame.counterAxisAlignItems = "CENTER";   // Horizontally centered
+  frame.itemSpacing = 24;                   // Base rhythm
+
+  // Use STANDARD padding for consistency across all variants
+  frame.paddingTop = STANDARD_PADDING.top;
+  frame.paddingRight = STANDARD_PADDING.right;
+  frame.paddingBottom = STANDARD_PADDING.bottom;
+  frame.paddingLeft = STANDARD_PADDING.left;
+
+  console.log(`[applyNativeSmartLayout] Root: VERTICAL, padding T${STANDARD_PADDING.top} R${STANDARD_PADDING.right} B${STANDARD_PADDING.bottom} L${STANDARD_PADDING.left} (STANDARD)`);
+
+  const contentWidth = frame.width - frame.paddingLeft - frame.paddingRight;
+  console.log(`[applyNativeSmartLayout] Content width: ${contentWidth}px`);
+
+  // ============================================
+  // STEP 2: Apply role-based sizing and spacing
+  // ============================================
+  console.log("[applyNativeSmartLayout] STEP 2: Applying role-based composition");
+
+  let prevRole: string | null = null;
+
+  for (const child of frame.children) {
+    if (!("layoutSizingHorizontal" in child)) continue;
+    if (isInsideComponentInstance(child)) continue;
+
+    const role = nodeToRole.get(child.id) || "unknown";
+    const nodeName = child.name;
+
+    console.log(`[applyNativeSmartLayout] Processing: ${nodeName} (role: ${role})`);
+
+    // Determine sizing based on semantic role
+    let targetWidthPercent = 1.0;  // Default: full width
+    let extraSpacingBefore = 0;
+    let extraSpacingAfter = 0;
+
+    switch (role) {
+      case "hero":
+        // Hero gets full width, extra space after
+        targetWidthPercent = 1.0;
+        extraSpacingAfter = 16;
+        console.log(`[applyNativeSmartLayout]   HERO: full width, +${extraSpacingAfter}px after`);
+        break;
+
+      case "product":
+        // Product mockups get prominence, centered
+        targetWidthPercent = 0.95;
+        extraSpacingBefore = 20;
+        extraSpacingAfter = 20;
+        console.log(`[applyNativeSmartLayout]   PRODUCT: 95% width, extra breathing room`);
+        break;
+
+      case "brand":
+        // Brand elements stay compact
+        targetWidthPercent = 0.5;
+        extraSpacingAfter = 8;
+        console.log(`[applyNativeSmartLayout]   BRAND: 50% width, compact`);
+        break;
+
+      case "cta":
+        // CTA needs emphasis and space
+        targetWidthPercent = 0.8;
+        extraSpacingBefore = 24;
+        console.log(`[applyNativeSmartLayout]   CTA: 80% width, space before for emphasis`);
+        break;
+
+      case "features":
+        // Features list - full width for readability
+        targetWidthPercent = 1.0;
+        extraSpacingBefore = 12;
+        console.log(`[applyNativeSmartLayout]   FEATURES: full width for readability`);
+        break;
+
+      case "metadata":
+        // Metadata is secondary - smaller
+        targetWidthPercent = 0.7;
+        console.log(`[applyNativeSmartLayout]   METADATA: 70% width, secondary`);
+        break;
+
+      case "decorative":
+        // Decorative can be full bleed
+        targetWidthPercent = 1.0;
+        console.log(`[applyNativeSmartLayout]   DECORATIVE: full width`);
+        break;
+
+      default:
+        // Unknown - use sensible default
+        targetWidthPercent = 0.9;
+        console.log(`[applyNativeSmartLayout]   UNKNOWN: 90% width default`);
+    }
+
+    // Apply sizing based on node type
+    if (child.type === "FRAME") {
+      const frameChild = child as FrameNode;
+
+      // Convert to auto-layout if needed
+      if (frameChild.layoutMode === "NONE" && frameChild.children.length > 0) {
+        frameChild.layoutMode = "VERTICAL";
+        frameChild.itemSpacing = 12;
+        frameChild.counterAxisAlignItems = "CENTER";
+        console.log(`[applyNativeSmartLayout]   Converted to VERTICAL auto-layout`);
+      }
+
+      if (frameChild.layoutMode !== "NONE") {
+        frameChild.layoutSizingHorizontal = "FILL";
+        frameChild.layoutSizingVertical = "HUG";
+
+        // Apply min/max based on role
+        const targetWidth = contentWidth * targetWidthPercent;
+        frameChild.minWidth = Math.max(200, targetWidth * 0.8);
+        frameChild.maxWidth = targetWidth;
+
+        console.log(`[applyNativeSmartLayout]   Constraints: min=${frameChild.minWidth?.toFixed(0)}, max=${frameChild.maxWidth?.toFixed(0)}`);
+      } else {
+        frameChild.layoutSizingHorizontal = "FIXED";
+        frameChild.layoutSizingVertical = "FIXED";
+      }
+    } else if (child.type === "TEXT") {
+      child.layoutSizingHorizontal = "FILL";
+      child.layoutSizingVertical = "HUG";
+      console.log(`[applyNativeSmartLayout]   Text: FILL width, HUG height`);
+    } else {
+      // Images, shapes, etc.
+      child.layoutSizingHorizontal = "FIXED";
+      child.layoutSizingVertical = "FIXED";
+
+      // Scale based on role
+      if (role === "product" || role === "hero") {
+        // Make hero/product images larger
+        const scale = Math.min(contentWidth / child.width, 1.2);
+        if (scale > 1 && "resize" in child) {
+          (child as FrameNode).resize(child.width * scale, child.height * scale);
+          console.log(`[applyNativeSmartLayout]   Scaled up by ${scale.toFixed(2)}x for prominence`);
+        }
+      }
+    }
+
+    prevRole = role;
+  }
+
+  // ============================================
+  // STEP 3: Apply visual rhythm via spacing
+  // ============================================
+  console.log("[applyNativeSmartLayout] STEP 3: Applying visual rhythm");
+
+  // Create rhythm by varying itemSpacing based on content
+  // Since Figma auto-layout uses uniform spacing, we achieve rhythm
+  // by setting a balanced base spacing
+  const childCount = frame.children.length;
+  if (childCount <= 3) {
+    frame.itemSpacing = 32;  // Fewer items = more breathing room
+    console.log(`[applyNativeSmartLayout]   Few children (${childCount}): generous spacing 32px`);
+  } else if (childCount <= 6) {
+    frame.itemSpacing = 24;  // Medium density
+    console.log(`[applyNativeSmartLayout]   Medium children (${childCount}): balanced spacing 24px`);
+  } else {
+    frame.itemSpacing = 16;  // Many items = tighter to fit
+    console.log(`[applyNativeSmartLayout]   Many children (${childCount}): compact spacing 16px`);
+  }
+
+  // ============================================
+  // STEP 4: Final composition adjustments
+  // ============================================
+  console.log("[applyNativeSmartLayout] STEP 4: Final composition adjustments");
+
+  // Use SPACE_BETWEEN if we have distinct content sections
+  const hasHero = Array.from(nodeToRole.values()).includes("hero");
+  const hasCta = Array.from(nodeToRole.values()).includes("cta");
+
+  if (hasHero && hasCta && childCount >= 3) {
+    frame.primaryAxisAlignItems = "SPACE_BETWEEN";
+    console.log(`[applyNativeSmartLayout]   Hero+CTA detected: using SPACE_BETWEEN for dramatic composition`);
+  }
+
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [applyNativeSmartLayout] COMPLETE                                ║");
+  console.log("║ Applied: role-based sizing, visual rhythm, smart spacing        ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+}
+
+/**
+ * Apply NATIVE GRID layout - uses Figma's actual GRID layoutMode.
+ * Uses Figma's native Grid API features:
+ * - layoutMode = "GRID" for true grid layout
+ * - gridColumnCount / gridRowCount for grid dimensions
+ * - gridColumnGap / gridRowGap for gutters
+ * - setGridChildPosition() for positioning children
+ */
+function applyNativeGridLayout(
+  frame: FrameNode,
+  specMap: Map<string, NodeSpec>,
+  originalWidth: number,
+  originalHeight: number
+): void {
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [applyNativeGridLayout] MODE: NATIVE_GRID                        ║");
+  console.log("║ Using Figma's native GRID layoutMode API                         ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
+
+  const children = [...frame.children];
+  const childCount = children.length;
+
+  // ============================================
+  // STEP 1: Enable GRID layout mode FIRST
+  // ============================================
+  console.log("[applyNativeGridLayout] STEP 1: Enabling GRID layout mode");
+
+  // Calculate optimal grid dimensions based on child count
+  let columns = 2;
+  let rows = Math.ceil(childCount / columns);
+
+  // Adjust for better aspect ratio
+  if (childCount <= 2) {
+    columns = 1;
+    rows = childCount;
+  } else if (childCount <= 4) {
+    columns = 2;
+    rows = Math.ceil(childCount / 2);
+  } else if (childCount <= 6) {
+    columns = 2;
+    rows = Math.ceil(childCount / 2);
+  } else {
+    columns = 3;
+    rows = Math.ceil(childCount / 3);
+  }
+
+  console.log(`[applyNativeGridLayout] Grid dimensions: ${columns} columns x ${rows} rows for ${childCount} children`);
+
+  // Set GRID layout mode BEFORE other properties
+  frame.layoutMode = "GRID";
+  frame.gridColumnCount = columns;
+  frame.gridRowCount = rows;
+
+  // Set gaps (vertical = gridRowGap, horizontal = gridColumnGap)
+  const gridGap = 24;  // Consistent with other variants' itemSpacing
+  frame.gridColumnGap = gridGap;
+  frame.gridRowGap = gridGap;
+
+  // Apply STANDARD padding AFTER layoutMode is set
+  frame.paddingTop = STANDARD_PADDING.top;
+  frame.paddingRight = STANDARD_PADDING.right;
+  frame.paddingBottom = STANDARD_PADDING.bottom;
+  frame.paddingLeft = STANDARD_PADDING.left;
+
+  const contentWidth = frame.width - frame.paddingLeft - frame.paddingRight;
+  const contentHeight = frame.height - frame.paddingTop - frame.paddingBottom;
+
+  console.log(`[applyNativeGridLayout] Grid configured:`);
+  console.log(`  layoutMode: GRID`);
+  console.log(`  gridColumnCount: ${columns}`);
+  console.log(`  gridRowCount: ${rows}`);
+  console.log(`  gridColumnGap: ${gridGap}px (horizontal)`);
+  console.log(`  gridRowGap: ${gridGap}px (vertical)`);
+  console.log(`  padding: T${STANDARD_PADDING.top} R${STANDARD_PADDING.right} B${STANDARD_PADDING.bottom} L${STANDARD_PADDING.left}`);
+  console.log(`  content area: ${contentWidth}px x ${contentHeight}px`);
+
+  // ============================================
+  // STEP 2: Position children in grid cells
+  // ============================================
+  console.log("[applyNativeGridLayout] STEP 2: Positioning children in grid cells");
+
+  let currentRow = 0;
+  let currentCol = 0;
+
+  for (const child of children) {
+    if (isInsideComponentInstance(child)) {
+      console.log(`[applyNativeGridLayout] SKIP (component instance): ${child.name}`);
+      continue;
+    }
+
+    console.log(`[applyNativeGridLayout] Placing ${child.name} at row=${currentRow}, col=${currentCol}`);
+
+    // Position the child in the grid
+    try {
+      if ("setGridChildPosition" in child) {
+        (child as SceneNode & { setGridChildPosition: (row: number, col: number) => void }).setGridChildPosition(currentRow, currentCol);
+        console.log(`[applyNativeGridLayout]   Positioned via setGridChildPosition()`);
+      }
+    } catch (e) {
+      console.log(`[applyNativeGridLayout]   Could not position: ${e}`);
+    }
+
+    // Set grid child alignment
+    if ("gridChildHorizontalAlign" in child) {
+      (child as SceneNode & { gridChildHorizontalAlign: string }).gridChildHorizontalAlign = "CENTER";
+    }
+    if ("gridChildVerticalAlign" in child) {
+      (child as SceneNode & { gridChildVerticalAlign: string }).gridChildVerticalAlign = "CENTER";
+    }
+
+    // Move to next cell
+    currentCol++;
+    if (currentCol >= columns) {
+      currentCol = 0;
+      currentRow++;
+    }
+  }
+
+  // ============================================
+  // STEP 3: Configure child sizing and alignment
+  // ============================================
+  console.log("[applyNativeGridLayout] STEP 3: Configuring child sizing");
+  console.log("[applyNativeGridLayout] NOTE: layoutSizing* doesn't apply to Grid children");
+  console.log("[applyNativeGridLayout] Using gridChildAlign* properties instead");
+
+  for (const child of children) {
+    if (isInsideComponentInstance(child)) continue;
+
+    // Grid children don't use layoutSizingHorizontal/Vertical
+    // Instead, sizing is controlled by grid cell and alignment properties
+
+    // Set grid alignment - valid values: MIN | CENTER | MAX | AUTO
+    // Note: Figma Grid doesn't have STRETCH - children maintain their size
+    // AUTO uses default alignment based on content
+    if ("gridChildHorizontalAlign" in child) {
+      (child as any).gridChildHorizontalAlign = "CENTER";
+      (child as any).gridChildVerticalAlign = "CENTER";
+      console.log(`[applyNativeGridLayout]   ${child.name}: gridChildAlign = CENTER/CENTER`);
+    }
+
+    // For frames, ensure they have auto-layout for their internal children
+    // Note: The frame itself is a Grid child, so layoutSizing* doesn't apply to it
+    // But we enable auto-layout so its OWN children are arranged properly
+    if (child.type === "FRAME") {
+      const frameChild = child as FrameNode;
+      if (frameChild.layoutMode === "NONE" && frameChild.children.length > 0) {
+        frameChild.layoutMode = "VERTICAL";
+        frameChild.counterAxisAlignItems = "CENTER";
+        frameChild.primaryAxisAlignItems = "CENTER";
+        frameChild.itemSpacing = 8;
+        console.log(`[applyNativeGridLayout]     Converted to VERTICAL auto-layout (internal)`);
+        // Note: layoutSizing* not set - frame is Grid child, not auto-layout child
+      }
+    }
+  }
+
+  console.log("╔══════════════════════════════════════════════════════════════════╗");
+  console.log("║ [applyNativeGridLayout] COMPLETE                                 ║");
+  console.log("║ Applied: GRID layoutMode, ${columns}x${rows} grid, centered cells               ║");
+  console.log("╚══════════════════════════════════════════════════════════════════╝");
 }
