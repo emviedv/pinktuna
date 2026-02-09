@@ -1074,6 +1074,18 @@ function applySemanticGrouping(
         }
 
         if (node) {
+          // Safety: never hide nodes with image fills - they're visually important
+          const hasImageFill = "fills" in node &&
+            Array.isArray((node as GeometryMixin).fills) &&
+            ((node as GeometryMixin).fills as ReadonlyArray<Paint>).some(
+              (f: Paint) => f.type === "IMAGE" && f.visible !== false
+            );
+          if (hasImageFill) {
+            console.log(`[applySemanticGrouping] PROTECT image node from hiding: ${node.name} (${nodeId})`);
+            orderedNodeIds.push(nodeId);
+            continue;
+          }
+
           node.visible = false;
           console.log(`[applySemanticGrouping] Hidden: ${node.name} (${nodeId})`);
         }

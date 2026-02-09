@@ -185,14 +185,15 @@ Analyze the design and group related elements by their semantic purpose. Element
 - "cta": Call-to-action text, website URLs, buttons - position carefully (avoid bottom danger zone)
 - "brand": Logo, brand marks - usually at top or bottom
 - "metadata": Author info, dates, read times, secondary text - often hidden on mobile
-- "decorative": Background shapes, accents, non-essential visuals - usually hidden
+- "decorative": Small accent shapes, divider lines, non-essential ornaments
 
 **Grouping Rules:**
 1. Elements that belong together visually → same group (headline + subhead = one "hero" group)
 2. An icon and its label → keep in same group (part of "features")
 3. Multiple related buttons → one "cta" group
 4. Order groups for TikTok: hero first (1-10), product/features middle (20-40), cta/brand at bottom (50-70)
-5. Set visible: false for "decorative" and "metadata" groups when they clutter mobile view
+5. Set visible: false ONLY for "metadata" groups that clutter mobile view
+6. NEVER set visible: false for background images, patterns, or large visual elements - these define the design's look
 
 ### Spacing Preservation (preserveSpacing)
 Set preserveSpacing: true for groups where the relative spacing between elements must be maintained.
@@ -256,7 +257,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
       "role": "decorative",
       "nodeIds": ["123:480"],
       "order": 99,
-      "visible": false
+      "visible": true
     }
   ],
   "nodes": [
