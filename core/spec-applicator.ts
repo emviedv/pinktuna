@@ -270,7 +270,7 @@ export async function applyLayoutSpec(
 
     // Apply MODE-SPECIFIC overrides to make variants visually distinct
     // This is critical because absolute positioning code path may not be reached
-    applyModeSpecificLayout(variant, mode);
+    applyModeSpecificLayout(variant, mode, variantSpec.rootLayout);
 
     // Convert nested containers to auto-layout
     const conversionIdChanges = convertToAutoLayout(variant, specMap);
@@ -373,24 +373,36 @@ const STANDARD_PADDING = {
  * NOTE: Padding is STANDARDIZED across all variants (via STANDARD_PADDING).
  * Only gap and alignment settings differ between modes.
  */
-function applyModeSpecificLayout(frame: FrameNode, mode: PositioningMode): void {
+function applyModeSpecificLayout(frame: FrameNode, mode: PositioningMode, rootLayout?: LayoutSpec["rootLayout"]): void {
   console.log(`[applyModeSpecificLayout] Applying mode-specific overrides for: ${mode}`);
 
-  // Apply STANDARD padding to ALL modes for consistency
-  frame.paddingTop = STANDARD_PADDING.top;
-  frame.paddingRight = STANDARD_PADDING.right;
-  frame.paddingBottom = STANDARD_PADDING.bottom;
-  frame.paddingLeft = STANDARD_PADDING.left;
-  console.log(`[applyModeSpecificLayout] Standard padding: T${STANDARD_PADDING.top} R${STANDARD_PADDING.right} B${STANDARD_PADDING.bottom} L${STANDARD_PADDING.left}`);
+  // For HYBRID (primary mode A), preserve the AI-specified rootLayout values
+  // For comparison variants (B-L), apply STANDARD padding with mode-specific gap/alignment
+  if (mode !== "HYBRID") {
+    frame.paddingTop = STANDARD_PADDING.top;
+    frame.paddingRight = STANDARD_PADDING.right;
+    frame.paddingBottom = STANDARD_PADDING.bottom;
+    frame.paddingLeft = STANDARD_PADDING.left;
+    console.log(`[applyModeSpecificLayout] Standard padding: T${STANDARD_PADDING.top} R${STANDARD_PADDING.right} B${STANDARD_PADDING.bottom} L${STANDARD_PADDING.left}`);
+  } else {
+    console.log(`[applyModeSpecificLayout] HYBRID mode: keeping AI-specified padding from rootLayout`);
+  }
 
   // Each mode gets VISUALLY DISTINCT gap/alignment settings (NOT padding)
   switch (mode) {
     case "HYBRID":
-      // A) Small gap, top-aligned
-      frame.itemSpacing = 16;
-      frame.primaryAxisAlignItems = "MIN";
-      frame.counterAxisAlignItems = "CENTER";
-      console.log(`[applyModeSpecificLayout] A) HYBRID: gap=16, top-aligned`);
+      // A) Use AI-specified values from rootLayout (already applied by applyRootLayout)
+      if (rootLayout) {
+        frame.itemSpacing = rootLayout.gap;
+        frame.primaryAxisAlignItems = rootLayout.primaryAxisAlign;
+        frame.counterAxisAlignItems = rootLayout.counterAxisAlign;
+        console.log(`[applyModeSpecificLayout] A) HYBRID: using AI values - gap=${rootLayout.gap}, primary=${rootLayout.primaryAxisAlign}, counter=${rootLayout.counterAxisAlign}`);
+      } else {
+        frame.itemSpacing = 16;
+        frame.primaryAxisAlignItems = "MIN";
+        frame.counterAxisAlignItems = "CENTER";
+        console.log(`[applyModeSpecificLayout] A) HYBRID: fallback - gap=16, top-aligned`);
+      }
       break;
 
     case "PRESERVE_SPACING":
@@ -512,10 +524,9 @@ function applyRootLayout(frame: FrameNode, layout: LayoutSpec["rootLayout"]): vo
   frame.layoutSizingVertical = "FIXED";
   console.log("[spec-applicator] Set sizing to FIXED");
 
-  // ALWAYS enable clip content on output frames to prevent content bleeding
-  // This ensures clean visual boundaries regardless of AI specification
-  frame.clipsContent = true;
-  console.log("[spec-applicator] Set clipsContent: true (always enforced on output frames)");
+  // Apply clip content setting from AI spec (defaults to true if not specified)
+  frame.clipsContent = layout.clipContent !== false;
+  console.log("[spec-applicator] Set clipsContent:", frame.clipsContent, "(from spec:", layout.clipContent, ")");
 }
 
 /**
@@ -1443,8 +1454,8 @@ function applyAbsolutePositioning(
     console.log(`  Original dimensions: ${originalPos.width.toFixed(1)} x ${originalPos.height.toFixed(1)}`);
     console.log(`  Current dimensions:  ${currentWidth.toFixed(1)} x ${currentHeight.toFixed(1)}`);
 
-    let newX: number;
-    let newY: number;
+    let newX: number = originalPos.x;
+    let newY: number = originalPos.y;
     let finalWidth = currentWidth;
     let finalHeight = currentHeight;
 
@@ -2427,10 +2438,13 @@ function applyNativeSmartLayout(
   console.log("[applyNativeSmartLayout] STEP 2: Applying role-based composition");
 
   let prevRole: string | null = null;
+  // Track extra spacing per child for rhythm - applied after iteration via spacer frames
+  const spacingInserts: Array<{ beforeChildIndex: number; spacing: number }> = [];
+  let childIndex = 0;
 
   for (const child of frame.children) {
-    if (!("layoutSizingHorizontal" in child)) continue;
-    if (isInsideComponentInstance(child)) continue;
+    if (!("layoutSizingHorizontal" in child)) { childIndex++; continue; }
+    if (isInsideComponentInstance(child)) { childIndex++; continue; }
 
     const role = nodeToRole.get(child.id) || "unknown";
     const nodeName = child.name;
@@ -2537,13 +2551,39 @@ function applyNativeSmartLayout(
         // Make hero/product images larger
         const scale = Math.min(contentWidth / child.width, 1.2);
         if (scale > 1 && "resize" in child) {
-          (child as FrameNode).resize(child.width * scale, child.height * scale);
+          (child as SceneNode & { resize: (w: number, h: number) => void }).resize(child.width * scale, child.height * scale);
           console.log(`[applyNativeSmartLayout]   Scaled up by ${scale.toFixed(2)}x for prominence`);
         }
       }
     }
 
+    // Record extra spacing for visual rhythm between role transitions
+    if (extraSpacingBefore > 0 && prevRole !== null && prevRole !== role) {
+      spacingInserts.push({ beforeChildIndex: childIndex, spacing: extraSpacingBefore });
+      console.log(`[applyNativeSmartLayout]   Rhythm: +${extraSpacingBefore}px before (transition from ${prevRole} to ${role})`);
+    }
+    if (extraSpacingAfter > 0) {
+      spacingInserts.push({ beforeChildIndex: childIndex + 1, spacing: extraSpacingAfter });
+      console.log(`[applyNativeSmartLayout]   Rhythm: +${extraSpacingAfter}px after ${role}`);
+    }
+
     prevRole = role;
+    childIndex++;
+  }
+
+  // Insert spacer frames for visual rhythm (in reverse to preserve indices)
+  for (let i = spacingInserts.length - 1; i >= 0; i--) {
+    const { beforeChildIndex, spacing } = spacingInserts[i];
+    if (beforeChildIndex >= 0 && beforeChildIndex <= frame.children.length) {
+      const spacer = figma.createFrame();
+      spacer.name = "_rhythm-spacer";
+      spacer.resize(1, spacing);
+      spacer.fills = [];
+      spacer.layoutSizingHorizontal = "FILL";
+      spacer.layoutSizingVertical = "FIXED";
+      frame.insertChild(Math.min(beforeChildIndex, frame.children.length), spacer);
+      console.log(`[applyNativeSmartLayout] Inserted ${spacing}px rhythm spacer at index ${beforeChildIndex}`);
+    }
   }
 
   // ============================================
@@ -2744,6 +2784,6 @@ function applyNativeGridLayout(
 
   console.log("╔══════════════════════════════════════════════════════════════════╗");
   console.log("║ [applyNativeGridLayout] COMPLETE                                 ║");
-  console.log("║ Applied: GRID layoutMode, ${columns}x${rows} grid, centered cells               ║");
+  console.log(`║ Applied: GRID layoutMode, ${columns}x${rows} grid, centered cells               ║`);
   console.log("╚══════════════════════════════════════════════════════════════════╝");
 }

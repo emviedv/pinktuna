@@ -241,7 +241,7 @@ export function getUIHtml(): string {
           hasValidSelection = msg.hasValidSelection;
           if (hasValidSelection) {
             selectionInfo.className = 'selection-info valid';
-            selectionName.textContent = msg.frameName || 'Selected frame';
+            selectionName.textContent = (msg.frameNames && msg.frameNames.length > 0) ? msg.frameNames.join(', ') : 'Selected frame';
           } else {
             selectionInfo.className = 'selection-info invalid';
             selectionName.textContent = 'No frame selected';

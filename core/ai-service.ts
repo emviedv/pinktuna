@@ -627,7 +627,7 @@ function parseLayoutSpec(content: string): LayoutSpec {
     const lines = jsonStr.split("\n");
     lines.shift(); // Remove opening ```json or ```
     while (lines.length && !lines[lines.length - 1].startsWith("```")) {
-      // Keep going
+      lines.pop(); // Remove trailing lines after closing ```
     }
     if (lines.length && lines[lines.length - 1].startsWith("```")) {
       lines.pop(); // Remove closing ```
